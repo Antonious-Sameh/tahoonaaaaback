@@ -10,6 +10,22 @@ import { cairoRangeMatch, cairoTodayBounds, cairoMonthBounds } from '../utils/ti
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
+/**
+ * Every distinct reason actually typed on a real expense — the correct
+ * source for the reason FILTER dropdown, which previously listed only a
+ * fixed set of suggested categories (EXPENSE_SUGGESTIONS on the frontend)
+ * regardless of what shows up in the data. Since `reason` is free text (see
+ * ExpensesPage's datalist), someone could type "فاتورة كهربا" once and
+ * "كهرباء" another time and neither would ever appear as a selectable
+ * filter option before this — this is what makes them selectable. Sorted
+ * so the dropdown is stable and easy to scan; empty/blank values can't
+ * occur (createExpense requires a non-empty reason).
+ */
+export async function getDistinctReasons() {
+  const reasons = await Expense.distinct('reason');
+  return reasons.filter(Boolean).sort((a, b) => a.localeCompare(b, 'ar'));
+}
+
 /** Matches ExpensesPage's filters: exact reason (or 'all'), date range. */
 export async function listExpenses({ page = 1, limit = DEFAULT_PAGE_SIZE, reason, from, to } = {}) {
   const match = {};
