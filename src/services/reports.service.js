@@ -138,10 +138,41 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
   return { ...summary, top: result.top };
 }
 
-/** Sales tab: revenue/collection stats for the range, plus best-selling products (by quantity). */
+/**
+ * Sales tab: revenue/collection stats for the range, plus best-selling
+ * products (by quantity).
+ *
+ * `creditOutstandingAtSale`: for sales IN this range, their own `total -
+ * paid`, reduced by any SalesReturn actually filed against that SAME sale
+ * (fully traceable via SalesReturn.saleId, so this part is exact). It does
+ * NOT reduce for a standalone "تسجيل سداد" CustomerPayment, because those
+ * settle a customer's AGGREGATE balance across every sale they've ever
+ * made, not any one specific invoice — there is no traceable link from a
+ * payment back to which sale(s) it paid down, so folding it in here would
+ * mean guessing at an allocation the data doesn't actually support. For the
+ * customer's true current balance (which DOES account for those payments),
+ * see the Customers report tab instead — this figure answers a narrower,
+ * but exact, question: "how much credit did sales in this period leave
+ * uncollected, net of what was later returned".
+ */
 export async function getSalesReport({ from, to } = {}) {
   const [result] = await Sale.aggregate([
     { $match: dateRangeMatch(from, to) },
+    {
+      $lookup: {
+        from: SalesReturn.collection.name,
+        localField: '_id',
+        foreignField: 'saleId',
+        as: '_returns',
+      },
+    },
+    {
+      $addFields: {
+        _liveRemaining: {
+          $max: [{ $subtract: ['$remaining', { $sum: '$_returns.totalReturnAmount' }] }, 0],
+        },
+      },
+    },
     {
       $facet: {
         overall: [
@@ -153,7 +184,7 @@ export async function getSalesReport({ from, to } = {}) {
               cashTotal: { $sum: { $cond: [{ $eq: ['$paymentMethod', 'cash'] }, '$total', 0] } },
               creditTotal: { $sum: { $cond: [{ $eq: ['$paymentMethod', 'credit'] }, '$total', 0] } },
               paid: { $sum: '$paid' },
-              remaining: { $sum: '$remaining' },
+              creditOutstandingAtSale: { $sum: '$_liveRemaining' },
             },
           },
         ],
@@ -175,7 +206,7 @@ export async function getSalesReport({ from, to } = {}) {
   ]);
 
   const overall = result.overall[0] || {
-    revenue: 0, invoiceCount: 0, cashTotal: 0, creditTotal: 0, paid: 0, remaining: 0,
+    revenue: 0, invoiceCount: 0, cashTotal: 0, creditTotal: 0, paid: 0, creditOutstandingAtSale: 0,
   };
   return {
     ...overall,
@@ -183,25 +214,49 @@ export async function getSalesReport({ from, to } = {}) {
   };
 }
 
-/** Purchases tab: totals for the range, plus the (uncapped-in-practice) supplier balance table. */
+/**
+ * Purchases tab: totals for the range, plus the (uncapped-in-practice)
+ * supplier balance table. `creditOutstandingAtPurchase` follows the exact
+ * same reasoning as getSalesReport's `creditOutstandingAtSale` above (swap
+ * customer/Sale for supplier/Purchase, SalesReturn for PurchaseReturn) —
+ * see that docstring for why standalone SupplierPayments aren't folded in.
+ * The supplier-balances table below is unaffected by any of this: it comes
+ * from getPersonBalanceReport, which already nets out both payments and
+ * returns per supplier (see that function's own docstring).
+ */
 export async function getPurchasesReport({ from, to } = {}) {
   const [overallResult, supplierBalances] = await Promise.all([
     Purchase.aggregate([
       { $match: dateRangeMatch(from, to) },
+      {
+        $lookup: {
+          from: PurchaseReturn.collection.name,
+          localField: '_id',
+          foreignField: 'purchaseId',
+          as: '_returns',
+        },
+      },
+      {
+        $addFields: {
+          _liveRemaining: {
+            $max: [{ $subtract: ['$remaining', { $sum: '$_returns.totalReturnAmount' }] }, 0],
+          },
+        },
+      },
       {
         $group: {
           _id: null,
           total: { $sum: '$total' },
           count: { $sum: 1 },
           paid: { $sum: '$paid' },
-          remaining: { $sum: '$remaining' },
+          creditOutstandingAtPurchase: { $sum: '$_liveRemaining' },
         },
       },
     ]),
     getPersonBalanceReport(Supplier, Purchase, 'supplierId', FULL_LIST_SAFETY_CAP, SupplierPayment, PurchaseReturn),
   ]);
 
-  const overall = overallResult[0] || { total: 0, count: 0, paid: 0, remaining: 0 };
+  const overall = overallResult[0] || { total: 0, count: 0, paid: 0, creditOutstandingAtPurchase: 0 };
   return { ...overall, supplierBalances: supplierBalances.top };
 }
 
