@@ -3,6 +3,7 @@ import { AppError } from '../middleware/errorHandler.js';
 import { recordActivity } from './activityLog.service.js';
 import { recordAuditLog } from './auditLog.service.js';
 import { withTransaction } from '../utils/transactions.js';
+import { cairoTodayBounds, cairoRangeMatch } from '../utils/timezone.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -36,10 +37,7 @@ export async function getBalance(session) {
 
 /** Balance + today's in/out totals, for the cashbox page header stats. */
 export async function getSummary() {
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const endOfToday = new Date();
-  endOfToday.setHours(23, 59, 59, 999);
+  const { start: startOfToday, end: endOfToday } = cairoTodayBounds();
 
   const [balance, todayAggResult] = await Promise.all([
     getBalance(),
@@ -66,11 +64,8 @@ export async function listCashboxTransactions({ page = 1, limit = DEFAULT_PAGE_S
   if (search && search.trim()) {
     match.reason = new RegExp(escapeRegex(search.trim()), 'i');
   }
-  if (from || to) {
-    match.date = {};
-    if (from) match.date.$gte = new Date(`${from}T00:00:00`);
-    if (to) match.date.$lte = new Date(`${to}T23:59:59`);
-  }
+  const range = cairoRangeMatch(from, to);
+  if (Object.keys(range).length) match.date = range;
 
   const pageNum = Math.max(1, Math.trunc(Number(page)) || 1);
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(limit)) || DEFAULT_PAGE_SIZE));

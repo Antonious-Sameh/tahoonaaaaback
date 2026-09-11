@@ -10,6 +10,7 @@ import { recordAuditLog } from './auditLog.service.js';
 import { withTransaction } from '../utils/transactions.js';
 import { round2 } from '../models/shared/money.js';
 import { getBalance } from './cashbox.service.js';
+import { cairoRangeMatch } from '../utils/timezone.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -234,11 +235,8 @@ export async function listPurchases({ page = 1, limit = DEFAULT_PAGE_SIZE, searc
   if (paymentMethod && paymentMethod !== 'all') {
     match.paymentMethod = paymentMethod;
   }
-  if (from || to) {
-    match.date = {};
-    if (from) match.date.$gte = new Date(`${from}T00:00:00`);
-    if (to) match.date.$lte = new Date(`${to}T23:59:59`);
-  }
+  const range = cairoRangeMatch(from, to);
+  if (Object.keys(range).length) match.date = range;
 
   const pageNum = Math.max(1, Math.trunc(Number(page)) || 1);
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(limit)) || DEFAULT_PAGE_SIZE));

@@ -5,6 +5,7 @@ import { recordActivity } from './activityLog.service.js';
 import { recordAuditLog } from './auditLog.service.js';
 import { withTransaction } from '../utils/transactions.js';
 import { getBalance } from './cashbox.service.js';
+import { cairoRangeMatch, cairoTodayBounds, cairoMonthBounds } from '../utils/timezone.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -13,11 +14,8 @@ const MAX_PAGE_SIZE = 100;
 export async function listExpenses({ page = 1, limit = DEFAULT_PAGE_SIZE, reason, from, to } = {}) {
   const match = {};
   if (reason && reason !== 'all') match.reason = reason;
-  if (from || to) {
-    match.date = {};
-    if (from) match.date.$gte = new Date(`${from}T00:00:00`);
-    if (to) match.date.$lte = new Date(`${to}T23:59:59`);
-  }
+  const range = cairoRangeMatch(from, to);
+  if (Object.keys(range).length) match.date = range;
 
   const pageNum = Math.max(1, Math.trunc(Number(page)) || 1);
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(limit)) || DEFAULT_PAGE_SIZE));
@@ -48,13 +46,8 @@ export async function listExpenses({ page = 1, limit = DEFAULT_PAGE_SIZE, reason
 
 /** Today's and this-month's expense totals, for the expenses page header stats. */
 export async function getSummary() {
-  const now = new Date();
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const endOfToday = new Date();
-  endOfToday.setHours(23, 59, 59, 999);
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
-  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  const { start: startOfToday, end: endOfToday } = cairoTodayBounds();
+  const { start: startOfMonth, end: endOfMonth } = cairoMonthBounds();
 
   const [todayResult, monthResult] = await Promise.all([
     Expense.aggregate([

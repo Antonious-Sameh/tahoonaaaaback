@@ -8,6 +8,7 @@ import CustomerPayment from '../models/CustomerPayment.js';
 import SupplierPayment from '../models/SupplierPayment.js';
 import SalesReturn from '../models/SalesReturn.js';
 import PurchaseReturn from '../models/PurchaseReturn.js';
+import { cairoRangeMatch } from '../utils/timezone.js';
 
 // Generous cap for an unlimited "full table" request (e.g. the purchases
 // report's supplier-balances table, which the frontend renders unpaginated
@@ -15,12 +16,13 @@ import PurchaseReturn from '../models/PurchaseReturn.js';
 // at the scale this system is built for.
 const FULL_LIST_SAFETY_CAP = 500;
 
+// `from`/`to` are YYYY-MM-DD as picked in the frontend's date range,
+// anchored to Cairo calendar days (see utils/timezone.js) rather than the
+// server's own local time — this is what a report period like "today" or
+// "this month" actually needs to mean for a shop operating in Egypt.
 function dateRangeMatch(from, to) {
-  if (!from && !to) return {};
-  const range = {};
-  if (from) range.$gte = new Date(`${from}T00:00:00`);
-  if (to) range.$lte = new Date(`${to}T23:59:59`);
-  return { date: range };
+  const range = cairoRangeMatch(from, to);
+  return Object.keys(range).length ? { date: range } : {};
 }
 
 /**
