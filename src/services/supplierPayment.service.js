@@ -9,6 +9,7 @@ import { recordAuditLog } from './auditLog.service.js';
 import { withTransaction } from '../utils/transactions.js';
 import { round2 } from '../models/shared/money.js';
 import { getSupplierRemaining } from './supplierBalance.service.js';
+import { getBalance } from './cashbox.service.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -66,6 +67,18 @@ export async function createSupplierPayment({ supplierId, amount, note, idempote
         400,
         { code: 'EXCEEDS_REMAINING', remaining: currentRemaining },
       );
+    }
+
+    // Cash actually leaving the register for this settlement must never
+    // exceed what's actually in it — same balance-sufficiency rule already
+    // enforced for manual withdrawals (cashbox.service.js), expenses
+    // (expense.service.js), and now paid purchases (purchase.service.js).
+    // Checked inside this transaction (via `session`) for the same
+    // race-safety reason as those, and before the payment document is
+    // created so a rejected settlement never leaves partial side effects.
+    const cashboxBalance = await getBalance(session);
+    if (amountNum > cashboxBalance) {
+      throw new AppError('رصيد الصندوق غير كافٍ لدفع هذا السداد', 400);
     }
 
     const balanceAfter = round2(currentRemaining - amountNum);

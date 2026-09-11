@@ -9,6 +9,7 @@ import { recordActivity } from './activityLog.service.js';
 import { recordAuditLog } from './auditLog.service.js';
 import { withTransaction } from '../utils/transactions.js';
 import { round2 } from '../models/shared/money.js';
+import { getBalance } from './cashbox.service.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -79,6 +80,21 @@ export async function createPurchase({ supplierId, items, paymentMethod, paid, d
     if (Number.isNaN(paidNum) || paidNum < 0) throw new AppError('المبلغ المدفوع غير صحيح', 400);
     if (paidNum > total) throw new AppError('المبلغ المدفوع أكبر من إجمالي العملية', 400);
     const remaining = round2(total - paidNum);
+
+    // Cash actually leaving the register for this purchase must never
+    // exceed what's actually in it — same balance-sufficiency rule already
+    // enforced for manual withdrawals (cashbox.service.js) and expenses
+    // (expense.service.js). Checked inside this transaction (via `session`)
+    // for the same race-safety reason as those two: a balance read outside
+    // the transaction could go stale against a concurrent write. Checked
+    // BEFORE any stock/document mutation below so a rejected purchase never
+    // leaves partial side effects behind.
+    if (paidNum > 0) {
+      const balance = await getBalance(session);
+      if (paidNum > balance) {
+        throw new AppError('رصيد الصندوق غير كافٍ لدفع هذا المبلغ لعملية الشراء', 400);
+      }
+    }
 
     // Weighted-average cost, computed via a MongoDB aggregation-pipeline
     // update (the array form of the `update` argument) rather than a
