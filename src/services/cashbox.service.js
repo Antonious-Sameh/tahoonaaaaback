@@ -134,3 +134,50 @@ export async function createCashTransaction({ type, amount, reason, date, notes 
     return tx;
   });
 }
+
+/**
+ * Deletes a MANUAL cashbox transaction only (refType === 'manual') — a
+ * deposit/withdrawal entered directly from the Cashbox page, with no other
+ * record depending on it. Every OTHER refType ('sale', 'purchase',
+ * 'expense', 'customer_payment', 'supplier_payment') is owned by that other
+ * record and must be deleted through IT instead (e.g. deleteExpense,
+ * deleteCustomerPayment) so the two stay deleted together — deleting one
+ * side here would silently leave the other claiming money moved that no
+ * longer shows up anywhere, which is exactly the inconsistency those
+ * dedicated delete functions exist to prevent. Rejected outright rather
+ * than silently allowed, so that mistake can't happen through this
+ * function.
+ */
+export async function deleteCashTransaction(id) {
+  const tx = await CashboxTransaction.findById(id);
+  if (!tx) throw new AppError('الحركة غير موجودة', 404);
+
+  if (tx.refType !== 'manual') {
+    throw new AppError(
+      'الحركة دي مرتبطة بعملية تانية (بيع/شراء/مصروف/سداد) ومينفعش تتحذف من هنا مباشرة — احذف العملية الأصلية بدل كده.',
+      400,
+    );
+  }
+
+  return withTransaction(async (session) => {
+    await CashboxTransaction.deleteOne({ _id: id }, { session });
+
+    await recordActivity(
+      {
+        type: 'cash',
+        description: tx.type === 'in'
+          ? `تم حذف حركة إضافة للصندوق: ${tx.reason}`
+          : `تم حذف حركة سحب من الصندوق: ${tx.reason}`,
+        amount: tx.amount,
+      },
+      { session },
+    );
+
+    await recordAuditLog(
+      { action: 'cashbox.transaction.delete', entityType: 'CashboxTransaction', entityId: tx._id, values: { type: tx.type, amount: tx.amount, reason: tx.reason } },
+      { session },
+    );
+
+    return { success: true };
+  });
+}

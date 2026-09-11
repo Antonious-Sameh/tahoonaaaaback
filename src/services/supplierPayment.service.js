@@ -162,3 +162,44 @@ export async function listSupplierPayments({ supplierId, page = 1, limit = DEFAU
     pagination: { page: pageNum, limit: pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
   };
 }
+
+/**
+ * Deletes a supplier payment AND its linked cashbox transaction together —
+ * mirror of customerPayment.service.js's deleteCustomerPayment (see that
+ * docstring for why this is safe: the supplier's `remaining` is always
+ * computed live, never stored, so nothing else needs recalculating).
+ */
+export async function deleteSupplierPayment(id) {
+  if (!id || !mongoose.isValidObjectId(id)) {
+    throw new AppError('معرّف السداد غير صالح', 400);
+  }
+  const payment = await SupplierPayment.findById(id);
+  if (!payment) throw new AppError('السداد غير موجود', 404);
+
+  return withTransaction(async (session) => {
+    const supplier = await Supplier.findById(payment.supplierId).session(session);
+
+    await SupplierPayment.deleteOne({ _id: id }, { session });
+    await CashboxTransaction.deleteMany({ refType: 'supplier_payment', refId: id }, { session });
+
+    await recordActivity(
+      {
+        type: 'supplier',
+        description: `تم حذف سداد بمبلغ ${payment.amount} للمورد ${supplier?.name || ''}`,
+        amount: payment.amount,
+      },
+      { session },
+    );
+    await recordAuditLog(
+      {
+        action: 'supplier.payment.delete',
+        entityType: 'SupplierPayment',
+        entityId: payment._id,
+        values: { supplierId: payment.supplierId, amount: payment.amount },
+      },
+      { session },
+    );
+
+    return { success: true };
+  });
+}
