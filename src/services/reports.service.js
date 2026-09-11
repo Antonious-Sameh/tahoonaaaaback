@@ -4,6 +4,10 @@ import Expense from '../models/Expense.js';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Supplier from '../models/Supplier.js';
+import CustomerPayment from '../models/CustomerPayment.js';
+import SupplierPayment from '../models/SupplierPayment.js';
+import SalesReturn from '../models/SalesReturn.js';
+import PurchaseReturn from '../models/PurchaseReturn.js';
 
 // Generous cap for an unlimited "full table" request (e.g. the purchases
 // report's supplier-balances table, which the frontend renders unpaginated
@@ -32,9 +36,20 @@ function dateRangeMatch(from, to) {
  * NOT date-filtered — matches the frontend's customerTotals/supplierTotals
  * selectors, which are always all-time balances regardless of any report
  * period selected elsewhere on the page.
+ *
+ * `PaymentModel`/`ReturnModel` are optional and, when passed, are folded
+ * into `paid`/`remaining` here using the EXACT SAME formula as
+ * `personService.getTotals` (standalone settlements reduce `remaining`
+ * directly; returns reduce it too and are floored at 0, with any excess
+ * ignored here — this report only ever needs `remaining`, never a
+ * `creditOwed` figure). This keeps the Reports page's numbers from ever
+ * drifting out of sync with what Customer/Supplier Details shows for the
+ * same person — the bug this fixes was exactly that drift: a customer who
+ * had paid down their balance via a standalone payment, or had goods
+ * returned, still showed their old, pre-payment/pre-return balance here.
  */
-async function getPersonBalanceReport(Model, TransactionModel, refField, limit) {
-  const [result] = await Model.aggregate([
+async function getPersonBalanceReport(Model, TransactionModel, refField, limit, PaymentModel, ReturnModel) {
+  const pipeline = [
     {
       $lookup: {
         from: TransactionModel.collection.name,
@@ -49,8 +64,55 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit) 
         paid: { $sum: '$_tx.paid' },
       },
     },
-    { $addFields: { remaining: { $subtract: ['$total', '$paid'] } } },
-    { $project: { _tx: 0 } },
+  ];
+
+  if (PaymentModel) {
+    pipeline.push(
+      {
+        $lookup: {
+          from: PaymentModel.collection.name,
+          localField: '_id',
+          foreignField: refField,
+          as: '_payments',
+        },
+      },
+      { $addFields: { paid: { $add: ['$paid', { $sum: '$_payments.amount' }] } } },
+    );
+  }
+
+  if (ReturnModel) {
+    pipeline.push(
+      {
+        $lookup: {
+          from: ReturnModel.collection.name,
+          localField: '_id',
+          foreignField: refField,
+          as: '_returns',
+        },
+      },
+      { $addFields: { returned: { $sum: '$_returns.totalReturnAmount' } } },
+    );
+  }
+
+  pipeline.push({
+    $addFields: {
+      remaining: ReturnModel
+        ? { $subtract: [{ $subtract: ['$total', '$paid'] }, '$returned'] }
+        : { $subtract: ['$total', '$paid'] },
+    },
+  });
+
+  if (ReturnModel) {
+    // Same floor-at-0 as personService.getTotals: a return can legitimately
+    // push the raw remaining negative (return eligibility is quantity-based
+    // only). This report only surfaces `remaining`, so the excess is simply
+    // not counted as outstanding — it never displayed a creditOwed figure
+    // before this fix either, so that stays out of scope here.
+    pipeline.push({ $addFields: { remaining: { $cond: [{ $lt: ['$remaining', 0] }, 0, '$remaining'] } } });
+  }
+
+  pipeline.push(
+    { $project: { _tx: 0, _payments: 0, _returns: 0 } },
     {
       $facet: {
         summary: [
@@ -66,7 +128,9 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit) 
         top: [{ $sort: { total: -1 } }, { $limit: limit }],
       },
     },
-  ]);
+  );
+
+  const [result] = await Model.aggregate(pipeline);
 
   const summary = result.summary[0] || { count: 0, totalOutstanding: 0, withBalanceCount: 0 };
   return { ...summary, top: result.top };
@@ -132,7 +196,7 @@ export async function getPurchasesReport({ from, to } = {}) {
         },
       },
     ]),
-    getPersonBalanceReport(Supplier, Purchase, 'supplierId', FULL_LIST_SAFETY_CAP),
+    getPersonBalanceReport(Supplier, Purchase, 'supplierId', FULL_LIST_SAFETY_CAP, SupplierPayment, PurchaseReturn),
   ]);
 
   const overall = overallResult[0] || { total: 0, count: 0, paid: 0, remaining: 0 };
@@ -210,11 +274,11 @@ export async function getInventoryReport() {
 }
 
 export async function getCustomersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit);
+  const { count, totalOutstanding, withBalanceCount, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn);
   return { count, totalOutstanding, withBalanceCount, topCustomers: top };
 }
 
 export async function getSuppliersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit);
+  const { count, totalOutstanding, withBalanceCount, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn);
   return { count, totalOutstanding, withBalanceCount, topSuppliers: top };
 }
