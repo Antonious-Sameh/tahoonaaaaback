@@ -106,8 +106,9 @@ export async function createPurchase({ supplierId, items, paymentMethod, paid, d
     // that (unusually) lists the same product on two lines, since each
     // update reads-and-writes the current document state in one atomic step.
     // Example: 6 @ 10 already in stock + 6 @ 15 new => (6*10+6*15)/12 = 12.5
+    const priceWarnings = [];
     for (const line of lines) {
-      const result = await Product.updateOne(
+      const updated = await Product.findOneAndUpdate(
         { _id: line.productId },
         [
           {
@@ -138,12 +139,20 @@ export async function createPurchase({ supplierId, items, paymentMethod, paid, d
             },
           },
         ],
-        { session },
+        { session, new: true, projection: { purchasePrice: 1, salePrice: 1, name: 1 } },
       );
-      if (result.matchedCount === 0) {
+      if (!updated) {
         // Only reachable if the product was deleted between the validation
         // read above and this write, within the same transaction.
         throw new AppError(`المنتج غير موجود: ${line.name}`, 404);
+      }
+      // Flag right here, at the exact moment a purchase is what pushed the
+      // cost to this point — the natural place to notice, rather than only
+      // discovering it later while selling at a loss. Never blocks the
+      // purchase itself; see product.service.js's `needsReview` filter for
+      // the standing way to find every such product later too.
+      if (updated.purchasePrice >= updated.salePrice) {
+        priceWarnings.push({ productId: updated._id, name: updated.name, purchasePrice: updated.purchasePrice, salePrice: updated.salePrice });
       }
     }
 
@@ -215,10 +224,10 @@ export async function createPurchase({ supplierId, items, paymentMethod, paid, d
       { session },
     );
 
-    return createdPurchase;
+    return { createdPurchase, priceWarnings };
   });
 
-  return purchase;
+  return { ...purchase.createdPurchase.toObject(), priceWarnings: purchase.priceWarnings };
 }
 
 /**
