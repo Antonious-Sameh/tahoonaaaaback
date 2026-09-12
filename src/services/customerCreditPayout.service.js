@@ -14,31 +14,6 @@ import { getBalance } from './cashbox.service.js';
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
-/**
- * Pays back part or all of a customer's creditOwed balance (money the shop
- * owes THEM — see personService.js's getTotals doc block, almost always
- * arising from a return worth more than what they still owed at the time).
- * The mirror-image of createCustomerPayment: that records money coming IN
- * from a customer against `remaining`; this records money going OUT to a
- * customer against `creditOwed`.
- *
- * Before this existed, creditOwed was a purely informational figure with no
- * way to actually settle it in the system — the shop owner would hand the
- * customer cash and have nothing to show for it here, permanently
- * overstating creditOwed and leaving no cashbox trail for money that
- * genuinely left the register.
- *
- * `getCustomerRemaining` returns a single signed figure (negative means
- * credit owed to the customer) — the current creditOwed is derived from it
- * the same way personService.getTotals derives its own creditOwed.
- *
- * Rejects an amount larger than the current creditOwed (same "no invented
- * balance" policy as createCustomerPayment rejecting overpaying past
- * `remaining`), and — since this is real cash leaving the register — also
- * rejects an amount larger than what's actually in the cashbox right now
- * (same balance-sufficiency rule as purchase.service.js/
- * supplierPayment.service.js's own 'out' transactions).
- */
 export async function createCustomerCreditPayout({ customerId, amount, note, idempotencyKey }) {
   if (!customerId || !mongoose.isValidObjectId(customerId)) {
     throw new AppError('معرّف عميل غير صالح', 400);
@@ -74,9 +49,6 @@ export async function createCustomerCreditPayout({ customerId, amount, note, ide
       );
     }
 
-    // Real cash leaving the register — same balance-sufficiency rule as
-    // every other 'out' transaction in this project (purchase payments,
-    // supplier settlements, manual withdrawals, expenses).
     const cashboxBalance = await getBalance(session);
     if (amountNum > cashboxBalance) {
       throw new AppError('رصيد الصندوق غير كافٍ لدفع هذا المبلغ للعميل', 400);
@@ -91,9 +63,6 @@ export async function createCustomerCreditPayout({ customerId, amount, note, ide
         { session },
       );
     } catch (err) {
-      // Rare race: two requests with the same idempotencyKey both passed
-      // the findOne check above and both reached create() — the sparse
-      // unique index catches it here.
       if (key && isDuplicateKeyError(err)) {
         const raced = await CustomerCreditPayout.findOne({ idempotencyKey: key }).session(session);
         if (raced) return raced;
@@ -139,7 +108,6 @@ export async function createCustomerCreditPayout({ customerId, amount, note, ide
   return payout;
 }
 
-/** Matches the shape of listCustomerPayments: paginated, newest first, scoped to one customer. */
 export async function listCustomerCreditPayouts({ customerId, page = 1, limit = DEFAULT_PAGE_SIZE } = {}) {
   if (!customerId || !mongoose.isValidObjectId(customerId)) {
     throw new AppError('معرّف عميل غير صالح', 400);
@@ -167,13 +135,6 @@ export async function listCustomerCreditPayouts({ customerId, page = 1, limit = 
   };
 }
 
-/**
- * Deletes a payout AND its linked cashbox transaction together — same
- * undo pattern as deleteExpense/deleteCustomerPayment/deleteSupplierPayment.
- * Safe by construction: creditOwed is always computed live (see
- * personService.getTotals), never stored, so removing this payout
- * automatically makes the customer's creditOwed correct again.
- */
 export async function deleteCustomerCreditPayout(id) {
   if (!id || !mongoose.isValidObjectId(id)) {
     throw new AppError('معرّف العملية غير صالح', 400);

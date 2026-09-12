@@ -12,9 +12,6 @@ router.use(requireAuth);
 
 const objectId = (message) => z.string().refine((v) => mongoose.isValidObjectId(v), { message });
 
-// Shape/sign check only — the real rules (amount <= customer's current
-// creditOwed, AND amount <= current cashbox balance) need database reads,
-// so they're enforced in customerCreditPayout.service.js.
 const createPayoutSchema = z.object({
   customerId: objectId('معرّف عميل غير صالح'),
   amount: z.coerce.number().positive('قيمة الدفع يجب أن تكون أكبر من صفر'),

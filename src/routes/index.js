@@ -42,9 +42,6 @@ router.use('/activity', activityRoute);
 router.use('/settings', settingsRoute);
 router.use('/uploads', uploadRoute);
 
-// Separate, self-contained, GET-only read model for the future System 5 —
-// gated by its own key (requireAdminReadKey), never by the shop's own
-// login. See src/middleware/adminAccess.js and src/routes/admin.route.js.
 router.use('/admin', adminRoute);
 
 export default router;
