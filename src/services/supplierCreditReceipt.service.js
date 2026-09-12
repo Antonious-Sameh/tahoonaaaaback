@@ -9,6 +9,7 @@ import { recordAuditLog } from './auditLog.service.js';
 import { withTransaction } from '../utils/transactions.js';
 import { round2 } from '../models/shared/money.js';
 import { getSupplierRemaining } from './supplierBalance.service.js';
+import { getBalance } from './cashbox.service.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -156,6 +157,11 @@ export async function listSupplierCreditReceipts({ supplierId, page = 1, limit =
  * deleteCustomerCreditPayout. Safe by construction: creditOwed is always
  * computed live (see personService.getTotals), never stored, so removing
  * this receipt automatically makes the supplier's creditOwed correct again.
+ *
+ * This receipt was a cashbox 'in' — same balance-sufficiency check as
+ * deleteCustomerPayment, and for the same reason: if this money has since
+ * been spent, removing it would retroactively push the live balance
+ * negative. Rejected outright rather than silently allowed.
  */
 export async function deleteSupplierCreditReceipt(id) {
   if (!id || !mongoose.isValidObjectId(id)) {
@@ -166,6 +172,15 @@ export async function deleteSupplierCreditReceipt(id) {
 
   return withTransaction(async (session) => {
     const supplier = await Supplier.findById(receipt.supplierId).session(session);
+
+    const cashboxBalance = await getBalance(session);
+    if (cashboxBalance - receipt.amount < 0) {
+      throw new AppError(
+        'متقدرش تحذف عملية الاستلام دي — الفلوس دي اتصرفت خلاص في حاجة تانية، والصندوق مش هيقدر يستحمل نقصانها دلوقتي',
+        400,
+        { code: 'WOULD_GO_NEGATIVE' },
+      );
+    }
 
     await SupplierCreditReceipt.deleteOne({ _id: id }, { session });
     await CashboxTransaction.deleteMany({ refType: 'supplier_credit_receipt', refId: id }, { session });
