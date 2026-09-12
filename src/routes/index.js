@@ -10,6 +10,7 @@ import customerPaymentRoute from './customerPayment.route.js';
 import customerCreditPayoutRoute from './customerCreditPayout.route.js';
 import salesReturnRoute from './salesReturn.route.js';
 import supplierPaymentRoute from './supplierPayment.route.js';
+import supplierCreditReceiptRoute from './supplierCreditReceipt.route.js';
 import purchaseReturnRoute from './purchaseReturn.route.js';
 import cashboxRoute from './cashbox.route.js';
 import expenseRoute from './expense.route.js';
@@ -33,6 +34,7 @@ router.use('/customer-payments', customerPaymentRoute);
 router.use('/customer-credit-payouts', customerCreditPayoutRoute);
 router.use('/sales-returns', salesReturnRoute);
 router.use('/supplier-payments', supplierPaymentRoute);
+router.use('/supplier-credit-receipts', supplierCreditReceiptRoute);
 router.use('/purchase-returns', purchaseReturnRoute);
 router.use('/cashbox', cashboxRoute);
 router.use('/expenses', expenseRoute);
@@ -42,6 +44,9 @@ router.use('/activity', activityRoute);
 router.use('/settings', settingsRoute);
 router.use('/uploads', uploadRoute);
 
+// Separate, self-contained, GET-only read model for the future System 5 —
+// gated by its own key (requireAdminReadKey), never by the shop's own
+// login. See src/middleware/adminAccess.js and src/routes/admin.route.js.
 router.use('/admin', adminRoute);
 
 export default router;
