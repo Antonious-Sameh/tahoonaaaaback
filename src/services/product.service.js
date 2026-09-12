@@ -51,11 +51,12 @@ export async function listProducts({ page = 1, limit = DEFAULT_PAGE_SIZE, search
     match.isActive = { $ne: false };
   } else if (filter === 'needsReview') {
     // Cost has caught up to (or passed) the sale price — most commonly
-    // because the weighted-average purchase cost climbed over several
-    // purchases while the sale price was never manually raised to match
-    // (see createPurchase's own priceWarnings for the point-of-purchase
-    // version of this same check). Selling at this price now yields zero
-    // or negative margin.
+    // because a supplier raised their price on a recent purchase (cost is
+    // simply overwritten to that purchase's price — see createPurchase)
+    // while the sale price was never manually raised to match (see
+    // createPurchase's own priceWarnings for the point-of-purchase version
+    // of this same check). Selling at this price now yields zero or
+    // negative margin.
     match.$expr = { $gte: ['$purchasePrice', '$salePrice'] };
     match.isActive = { $ne: false };
   } else if (filter === 'hidden') {
