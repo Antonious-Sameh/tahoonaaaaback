@@ -38,6 +38,14 @@ function escapeRegex(str) {
  * purpose: a return reduces what the customer effectively owes without
  * rewriting the historical "total sold" figure.
  *
+ * `PayoutModel` (optional, Customer-only — CustomerCreditPayout): money the
+ * shop has since paid BACK to the customer against a creditOwed balance
+ * (see customerCreditPayout.service.js). Folded in as a POSITIVE adjustment
+ * (opposite direction from returns/payments) since it's what brings
+ * creditOwed back down after being settled — without this, creditOwed
+ * would stay stuck at whatever a return first set it to, forever, even
+ * after the shop actually paid it out.
+ *
  * A return is NEVER rejected for exceeding what the person owed (return
  * eligibility is quantity-based only — see salesReturn.service.js /
  * purchaseReturn.service.js), so this subtraction can legitimately go
@@ -47,12 +55,14 @@ function escapeRegex(str) {
  * is surfaced separately as `creditOwed`: money the shop owes BACK to this
  * person. This is a transparent, read-only figure only — not a stored,
  * spendable, or redeemable balance (the system has no such concept, and
- * this does not invent one); it does not touch the cashbox by itself. See
- * services/customerBalance.service.js / supplierBalance.service.js for the
- * exact same formula used inside a transaction when validating a new
- * payment/return.
+ * this does not invent one) UNTIL a CustomerCreditPayout is recorded
+ * against it (see customerCreditPayout.service.js) — that's the only thing
+ * that touches the cashbox for this figure; getTotals itself never does.
+ * See services/customerBalance.service.js / supplierBalance.service.js for
+ * the exact same formula used inside a transaction when validating a new
+ * payment/return/payout.
  */
-export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel }) {
+export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel, PayoutModel }) {
   async function getTotals(personId) {
     const [result] = await TransactionModel.aggregate([
       { $match: { [refField]: new mongoose.Types.ObjectId(personId) } },
@@ -88,6 +98,18 @@ export function createPersonService({ Model, TransactionModel, refField, activit
       const returned = returnResult?.returned || 0;
       base.returned = returned;
       base.remaining -= returned;
+
+      let paidOut = 0;
+      if (PayoutModel) {
+        const [payoutResult] = await PayoutModel.aggregate([
+          { $match: { [refField]: new mongoose.Types.ObjectId(personId) } },
+          { $group: { _id: null, paidOut: { $sum: '$amount' } } },
+        ]);
+        paidOut = payoutResult?.paidOut || 0;
+        base.paidOut = paidOut;
+        base.remaining += paidOut;
+      }
+
       // Floor at 0 + surface any excess as creditOwed — see the doc block
       // above. Only relevant once ReturnModel exists, since neither Sale/
       // Purchase (bounded per-transaction) nor CustomerPayment/SupplierPayment
@@ -170,15 +192,35 @@ export function createPersonService({ Model, TransactionModel, refField, activit
       );
     }
 
+    if (ReturnModel && PayoutModel) {
+      itemsPipeline.push(
+        {
+          $lookup: {
+            from: PayoutModel.collection.name,
+            localField: '_id',
+            foreignField: refField,
+            as: '_payouts',
+          },
+        },
+        { $addFields: { 'totals.paidOut': { $sum: '$_payouts.amount' } } },
+      );
+    }
+
     const excludeProjection = { _tx: 0 };
     if (PaymentModel) excludeProjection._payments = 0;
     if (ReturnModel) excludeProjection._returns = 0;
+    if (ReturnModel && PayoutModel) excludeProjection._payouts = 0;
 
     itemsPipeline.push(
       {
         $addFields: {
           'totals.remaining': ReturnModel
-            ? { $subtract: [{ $subtract: ['$totals.total', '$totals.paid'] }, '$totals.returned'] }
+            ? {
+              $add: [
+                { $subtract: [{ $subtract: ['$totals.total', '$totals.paid'] }, '$totals.returned'] },
+                PayoutModel ? '$totals.paidOut' : 0,
+              ],
+            }
             : { $subtract: ['$totals.total', '$totals.paid'] },
         },
       },

@@ -6,7 +6,7 @@ import { round2 } from '../models/shared/money.js';
  * that needs to validate an action against a LIVE balance inside a
  * transaction (recording a payment, recording a return). Mirrors
  * personService.getTotals' remaining formula exactly:
- * transactionsTotal - transactionsPaid - payments - returns.
+ * transactionsTotal - transactionsPaid - payments - returns + payouts.
  *
  * Generalized from what used to be a Customer-only helper
  * (customerBalance.service.js) once Supplier needed the EXACT same
@@ -17,12 +17,21 @@ import { round2 } from '../models/shared/money.js';
  * function, parameterized by which models to read, is what prevents that
  * for both Customer and Supplier at once.
  *
+ * `PayoutModel` (optional, Customer-only for now — CustomerCreditPayout):
+ * money the shop has paid BACK to a person for a creditOwed balance (see
+ * customerCreditPayout.service.js). Added back with a `+` because it moves
+ * the raw figure toward zero/positive — the opposite direction from
+ * `priorReturns`/`priorPayments`, which push it negative (money owed TO the
+ * person). This is what lets a settled payout actually bring creditOwed
+ * back down instead of leaving it stuck at whatever a return first set it
+ * to.
+ *
  * `session` is required (not optional) — every caller runs inside a
  * transaction anyway (see withTransaction in the callers), and a balance
  * check for money movement outside a transaction would defeat the whole
  * point of reading it consistently with the write that follows.
  */
-export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, refField, personId, session }) {
+export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, PayoutModel, refField, personId, session }) {
   const [txAgg] = await TransactionModel.aggregate([
     { $match: { [refField]: personId } },
     { $group: { _id: null, total: { $sum: '$total' }, paid: { $sum: '$paid' } } },
@@ -42,7 +51,16 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
   ]).session(session);
   const priorReturns = returnsAgg?.returned || 0;
 
-  return round2(txTotal - txPaid - priorPayments - priorReturns);
+  let priorPayouts = 0;
+  if (PayoutModel) {
+    const [payoutsAgg] = await PayoutModel.aggregate([
+      { $match: { [refField]: personId } },
+      { $group: { _id: null, paidOut: { $sum: '$amount' } } },
+    ]).session(session);
+    priorPayouts = payoutsAgg?.paidOut || 0;
+  }
+
+  return round2(txTotal - txPaid - priorPayments - priorReturns + priorPayouts);
 }
 
 export default getPersonRemaining;
