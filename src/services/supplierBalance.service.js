@@ -1,28 +1,30 @@
-import Purchase from '../models/Purchase.js';
-import SupplierPayment from '../models/SupplierPayment.js';
-import PurchaseReturn from '../models/PurchaseReturn.js';
-import SupplierCreditReceipt from '../models/SupplierCreditReceipt.js';
+import Sale from '../models/Sale.js';
+import Customer from '../models/Customer.js';
+import CustomerPayment from '../models/CustomerPayment.js';
+import SalesReturn from '../models/SalesReturn.js';
+import CustomerCreditPayout from '../models/CustomerCreditPayout.js';
 import { getPersonRemaining } from './personBalance.service.js';
 
 /**
- * Thin Supplier-specific wrapper over the generic getPersonRemaining (see
- * personBalance.service.js) — the mirror of customerBalance.service.js's
- * getCustomerRemaining, but reading Purchase/SupplierPayment/PurchaseReturn
- * instead of Sale/CustomerPayment/SalesReturn. Same "how much do we
- * currently owe THIS supplier" figure supplierPayment.service.js and
- * purchaseReturn.service.js both validate against — kept as one function so
- * they can never compute it differently from each other.
+ * Thin Customer-specific wrapper over the generic getPersonRemaining (see
+ * personBalance.service.js — shared with supplierBalance.service.js so
+ * Customer and Supplier can never compute this differently from each
+ * other). Kept as its own small function (rather than inlining the model
+ * list at every call site) so customerPayment.service.js and
+ * salesReturn.service.js don't each need to know which models feed a
+ * customer's balance.
  */
-export async function getSupplierRemaining(supplierId, session) {
+export async function getCustomerRemaining(customerId, session) {
   return getPersonRemaining({
-    TransactionModel: Purchase,
-    PaymentModel: SupplierPayment,
-    ReturnModel: PurchaseReturn,
-    PayoutModel: SupplierCreditReceipt,
-    refField: 'supplierId',
-    personId: supplierId,
+    TransactionModel: Sale,
+    PaymentModel: CustomerPayment,
+    ReturnModel: SalesReturn,
+    PayoutModel: CustomerCreditPayout,
+    PersonModel: Customer,
+    refField: 'customerId',
+    personId: customerId,
     session,
   });
 }
 
-export default getSupplierRemaining;
+export default getCustomerRemaining;
