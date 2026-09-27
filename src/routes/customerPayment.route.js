@@ -12,12 +12,15 @@ router.use(requireAuth);
 
 const objectId = (message) => z.string().refine((v) => mongoose.isValidObjectId(v), { message });
 
-// Shape/sign check only — the real rule (amount <= customer's current
-// remaining balance) needs a database read, so it's enforced in
+// Shape/sign check only — the real rule (amount + discount <= customer's
+// current remaining balance) needs a database read, so it's enforced in
 // customerPayment.service.js, same pattern as sale/purchase discount.
 const createPaymentSchema = z.object({
   customerId: objectId('معرّف عميل غير صالح'),
   amount: z.coerce.number().positive('قيمة السداد يجب أن تكون أكبر من صفر'),
+  // Optional settlement/write-off recorded alongside this payment — see
+  // customerPayment.service.js's createCustomerPayment docstring.
+  discount: z.coerce.number().min(0, 'قيمة الخصم/التسوية يجب ألا تكون سالبة').optional().default(0),
   note: z.string().trim().max(500).optional().default(''),
   // Optional duplicate-submission guard — see customerPayment.service.js.
   // Optional (unlike sales-returns) for backward compatibility with any

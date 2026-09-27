@@ -8,8 +8,8 @@ export const list = asyncHandler(async (req, res) => {
 });
 
 export const create = asyncHandler(async (req, res) => {
-  const { customerId, amount, note, idempotencyKey } = req.body;
-  const payment = await customerPaymentService.createCustomerPayment({ customerId, amount, note, idempotencyKey });
+  const { customerId, amount, discount, note, idempotencyKey } = req.body;
+  const payment = await customerPaymentService.createCustomerPayment({ customerId, amount, discount, note, idempotencyKey });
   res.status(201).json({ success: true, data: payment });
 });
 

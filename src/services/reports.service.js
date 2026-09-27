@@ -108,6 +108,11 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
         },
       },
       { $addFields: { paid: { $add: ['$paid', { $sum: '$_payments.amount' }] } } },
+      // Settlements/write-offs (Customer only for now — see
+      // CustomerPayment.discount) — kept OUT of `paid` (that figure means
+      // "cash collected" wherever it's shown) and folded into `remaining`
+      // separately below instead, alongside opening balance.
+      { $addFields: { settlementsGiven: { $sum: '$_payments.discount' } } },
     );
   }
 
@@ -142,21 +147,26 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
   pipeline.push({
     $addFields: {
       remaining: {
-        $add: [
-          ReturnModel
-            ? { $subtract: [{ $subtract: ['$total', '$paid'] }, '$returned'] }
-            : { $subtract: ['$total', '$paid'] },
-          PayoutModel ? '$paidOut' : 0,
-          // Opening balance — same signed contribution as
-          // personService.js/personBalance.service.js, relative to
-          // openingBalancePositiveDirection.
+        $subtract: [
           {
-            $cond: [
-              { $eq: ['$openingBalance.direction', openingBalancePositiveDirection] },
-              { $ifNull: ['$openingBalance.amount', 0] },
-              { $multiply: [{ $ifNull: ['$openingBalance.amount', 0] }, -1] },
+            $add: [
+              ReturnModel
+                ? { $subtract: [{ $subtract: ['$total', '$paid'] }, '$returned'] }
+                : { $subtract: ['$total', '$paid'] },
+              PayoutModel ? '$paidOut' : 0,
+              // Opening balance — same signed contribution as
+              // personService.js/personBalance.service.js, relative to
+              // openingBalancePositiveDirection.
+              {
+                $cond: [
+                  { $eq: ['$openingBalance.direction', openingBalancePositiveDirection] },
+                  { $ifNull: ['$openingBalance.amount', 0] },
+                  { $multiply: [{ $ifNull: ['$openingBalance.amount', 0] }, -1] },
+                ],
+              },
             ],
           },
+          { $ifNull: ['$settlementsGiven', 0] },
         ],
       },
     },
@@ -178,6 +188,11 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
               count: { $sum: 1 },
               totalOutstanding: { $sum: '$remaining' },
               withBalanceCount: { $sum: { $cond: [{ $gt: ['$remaining', 0] }, 1, 0] } },
+              // Total settlements/write-offs given across everyone (Customer
+              // only for now) — surfaced as its own figure so it stays
+              // visible in the report rather than silently vanishing into
+              // totalOutstanding (see this function's own docstring).
+              totalSettlements: { $sum: { $ifNull: ['$settlementsGiven', 0] } },
             },
           },
         ],
@@ -188,7 +203,7 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
 
   const [result] = await Model.aggregate(pipeline);
 
-  const summary = result.summary[0] || { count: 0, totalOutstanding: 0, withBalanceCount: 0 };
+  const summary = result.summary[0] || { count: 0, totalOutstanding: 0, withBalanceCount: 0, totalSettlements: 0 };
   return { ...summary, top: result.top };
 }
 
@@ -620,11 +635,11 @@ export async function getInventoryReport() {
 }
 
 export async function getCustomersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us');
-  return { count, totalOutstanding, withBalanceCount, topCustomers: top };
+  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us');
+  return { count, totalOutstanding, withBalanceCount, totalSettlements, topCustomers: top };
 }
 
 export async function getSuppliersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them');
-  return { count, totalOutstanding, withBalanceCount, topSuppliers: top };
+  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them');
+  return { count, totalOutstanding, withBalanceCount, totalSettlements, topSuppliers: top };
 }

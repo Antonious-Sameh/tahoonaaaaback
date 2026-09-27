@@ -94,11 +94,23 @@ export function createPersonService({ Model, TransactionModel, refField, activit
     if (PaymentModel) {
       const [paymentResult] = await PaymentModel.aggregate([
         { $match: { [refField]: new mongoose.Types.ObjectId(personId) } },
-        { $group: { _id: null, paid: { $sum: '$amount' } } },
+        { $group: { _id: null, paid: { $sum: '$amount' }, discount: { $sum: '$discount' } } },
       ]);
       const paymentsPaid = paymentResult?.paid || 0;
+      // Settlements/write-offs (Customer only for now — see
+      // CustomerPayment.discount) reduce `remaining` exactly like a real
+      // payment, but are deliberately kept OUT of `base.paid` — that figure
+      // is shown to the shop owner as "money collected" (see
+      // CustomerDetailsPage.jsx), and a discount was never collected.
+      // Exposed instead as its own `settlementsGiven` figure so it stays
+      // visible rather than silently disappearing into either number.
+      const paymentsDiscount = paymentResult?.discount || 0;
       base.paid += paymentsPaid;
       base.remaining -= paymentsPaid;
+      if (paymentsDiscount) {
+        base.settlementsGiven = paymentsDiscount;
+        base.remaining -= paymentsDiscount;
+      }
     }
 
     if (ReturnModel) {
@@ -198,6 +210,11 @@ export function createPersonService({ Model, TransactionModel, refField, activit
           },
         },
         { $addFields: { 'totals.paid': { $add: ['$totals.paid', { $sum: '$_payments.amount' }] } } },
+        // Settlements/write-offs (Customer only for now — see
+        // CustomerPayment.discount) — kept OUT of 'totals.paid' (see
+        // getTotals' own comment for why) and folded into 'totals.remaining'
+        // separately below, right alongside opening balance.
+        { $addFields: { 'totals.settlementsGiven': { $sum: '$_payments.discount' } } },
       );
     }
 
@@ -264,6 +281,13 @@ export function createPersonService({ Model, TransactionModel, refField, activit
                 ],
               },
             ],
+          },
+        },
+      },
+      {
+        $addFields: {
+          'totals.remaining': {
+            $subtract: ['$totals.remaining', { $ifNull: ['$totals.settlementsGiven', 0] }],
           },
         },
       },

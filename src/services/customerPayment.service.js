@@ -36,8 +36,22 @@ const MAX_PAGE_SIZE = 100;
  * endpoints) purely for backward compatibility with any caller that
  * predates this field — a caller that omits it simply gets no duplicate
  * protection, same as before this audit.
+ *
+ * `discount` (optional, defaults to 0): a settlement/write-off recorded
+ * alongside this same payment — e.g. the customer owed 34,000, paid
+ * 30,000, and the shop agreed to drop the remaining 4,000. Validated the
+ * same way `amount` already was: `amount + discount` together can never
+ * exceed the customer's current remaining balance (checked against a
+ * fresh, live read inside this same transaction — never trusted from the
+ * caller). CRITICAL: `discount` is folded into `balanceAfter` (it reduces
+ * what the customer owes, exactly like a real payment would) but is
+ * deliberately NEVER added to the CashboxTransaction created below — only
+ * `amountNum` (the actual cash) ever reaches the cashbox. This is the one
+ * property this whole feature exists to guarantee, so it's worth stating
+ * twice: a discount is money that was forgiven, not money that was
+ * collected, and must never be counted as either.
  */
-export async function createCustomerPayment({ customerId, amount, note, idempotencyKey }) {
+export async function createCustomerPayment({ customerId, amount, discount, note, idempotencyKey }) {
   if (!customerId || !mongoose.isValidObjectId(customerId)) {
     throw new AppError('معرّف عميل غير صالح', 400);
   }
@@ -45,6 +59,12 @@ export async function createCustomerPayment({ customerId, amount, note, idempote
   const amountNum = round2(Number(amount));
   if (Number.isNaN(amountNum) || amountNum <= 0) {
     throw new AppError('قيمة السداد يجب أن تكون أكبر من صفر', 400);
+  }
+
+  const hasDiscount = discount !== undefined && discount !== null && discount !== '';
+  const discountNum = hasDiscount ? round2(Number(discount)) : 0;
+  if (Number.isNaN(discountNum) || discountNum < 0) {
+    throw new AppError('قيمة الخصم/التسوية غير صحيحة', 400);
   }
 
   const key = idempotencyKey && String(idempotencyKey).trim() ? String(idempotencyKey).trim() : null;
@@ -60,20 +80,21 @@ export async function createCustomerPayment({ customerId, amount, note, idempote
 
     const currentRemaining = await getCustomerRemaining(customer._id, session);
 
-    if (amountNum > currentRemaining) {
+    const settledTotal = round2(amountNum + discountNum);
+    if (settledTotal > currentRemaining) {
       throw new AppError(
-        'مبلغ السداد أكبر من المتبقي على العميل',
+        'مجموع المدفوع والخصم أكبر من المتبقي على العميل',
         400,
         { code: 'EXCEEDS_REMAINING', remaining: currentRemaining },
       );
     }
 
-    const balanceAfter = round2(currentRemaining - amountNum);
+    const balanceAfter = round2(currentRemaining - settledTotal);
 
     let created;
     try {
       [created] = await CustomerPayment.create(
-        [{ customerId: customer._id, amount: amountNum, balanceAfter, note: note || '', idempotencyKey: key }],
+        [{ customerId: customer._id, amount: amountNum, discount: discountNum, balanceAfter, note: note || '', idempotencyKey: key }],
         { session },
       );
     } catch (err) {
@@ -87,6 +108,8 @@ export async function createCustomerPayment({ customerId, amount, note, idempote
       throw err;
     }
 
+    // Only the real cash — see this function's own docstring above for why
+    // `discountNum` must never appear here.
     await CashboxTransaction.create(
       [{
         type: 'in',
@@ -102,7 +125,9 @@ export async function createCustomerPayment({ customerId, amount, note, idempote
     await recordActivity(
       {
         type: 'customer',
-        description: `تم تسجيل سداد من العميل ${customer.name} بمبلغ ${amountNum}`,
+        description: discountNum > 0
+          ? `تم تسجيل سداد من العميل ${customer.name} بمبلغ ${amountNum} (وتسوية/خصم قدره ${discountNum})`
+          : `تم تسجيل سداد من العميل ${customer.name} بمبلغ ${amountNum}`,
         amount: amountNum,
         refId: created._id,
       },
@@ -114,7 +139,7 @@ export async function createCustomerPayment({ customerId, amount, note, idempote
         action: 'customer.payment.create',
         entityType: 'CustomerPayment',
         entityId: created._id,
-        values: { customerId: customer._id, amount: amountNum, balanceBefore: currentRemaining, balanceAfter },
+        values: { customerId: customer._id, amount: amountNum, discount: discountNum, balanceBefore: currentRemaining, balanceAfter },
       },
       { session },
     );

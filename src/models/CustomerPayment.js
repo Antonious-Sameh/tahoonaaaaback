@@ -22,11 +22,12 @@ const { Schema, model, models } = mongoose;
  * computed fresh (see personService.getTotals), never by mutating history.
  *
  * `balanceAfter` is a SNAPSHOT of the customer's remaining balance
- * immediately after this payment was applied, computed once inside the same
- * transaction that creates this document (see customerPayment.service.js)
- * — matches the project's snapshot philosophy for Sale/Purchase line items:
- * history must keep showing exactly what the balance was at that moment,
- * even as later sales/payments move it further.
+ * immediately after this payment (and any `discount` above) was applied,
+ * computed once inside the same transaction that creates this document
+ * (see customerPayment.service.js) — matches the project's snapshot
+ * philosophy for Sale/Purchase line items: history must keep showing
+ * exactly what the balance was at that moment, even as later sales/
+ * payments move it further.
  */
 const customerPaymentSchema = new Schema(
   {
@@ -34,9 +35,20 @@ const customerPaymentSchema = new Schema(
     // Strictly positive — a payment of 0 or less is meaningless and is
     // rejected in the service layer before this is ever constructed.
     amount: moneyField({ required: true, min: 0.01 }),
+    // Optional settlement/write-off recorded alongside this SAME payment —
+    // e.g. the customer owed 34,000, paid 30,000, and the shop agreed to
+    // drop the remaining 4,000. Deliberately a separate field from
+    // `amount`, never merged into it: `amount` is the actual cash that
+    // came in (what the cashbox transaction below is created for — see
+    // customerPayment.service.js), while `discount` is money that was
+    // simply forgiven and must NEVER be treated as collected. Both reduce
+    // the customer's outstanding balance (see personBalance.service.js /
+    // personService.js / reports.service.js), but only `amount` ever
+    // touches the cashbox.
+    discount: moneyField({ min: 0, default: 0 }),
     // Snapshot of the customer's remaining balance right after this
-    // payment — never negative (a payment can never exceed the balance at
-    // the time it's recorded; see customerPayment.service.js).
+    // payment — never negative (amount + discount can never exceed the
+    // balance at the time it's recorded; see customerPayment.service.js).
     balanceAfter: moneyField({ required: true }),
     note: { type: String, default: '', trim: true, maxlength: 500 },
     // Business date/time of the payment — distinct from Mongoose's own

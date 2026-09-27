@@ -54,6 +54,15 @@ import { round2 } from '../models/shared/money.js';
  * supplierBalance.service.js each hardcode the correct value for their own
  * entity type so this can never be passed wrong from a call site.
  *
+ * `PaymentModel`'s `discount` (optional, Customer-only for now —
+ * CustomerPayment.discount): a settlement/write-off recorded alongside a
+ * real payment (see customerPayment.service.js) — reduces this raw figure
+ * exactly like `amount` does (both were forgiven-or-collected against the
+ * same debt), but is summed as its own separate term here so it's never
+ * confused with real cash collected. Safe to sum unconditionally even for
+ * models with no such field (SupplierPayment): a missing field contributes
+ * nothing to a MongoDB `$sum`, so this is exactly 0 for every supplier.
+ *
  * `session` is required (not optional) — every caller runs inside a
  * transaction anyway (see withTransaction in the callers), and a balance
  * check for money movement outside a transaction would defeat the whole
@@ -69,9 +78,10 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
 
   const [paymentsAgg] = await PaymentModel.aggregate([
     { $match: { [refField]: personId } },
-    { $group: { _id: null, paid: { $sum: '$amount' } } },
+    { $group: { _id: null, paid: { $sum: '$amount' }, discount: { $sum: '$discount' } } },
   ]).session(session);
   const priorPayments = paymentsAgg?.paid || 0;
+  const priorPaymentDiscounts = paymentsAgg?.discount || 0;
 
   const [returnsAgg] = await ReturnModel.aggregate([
     { $match: { [refField]: personId } },
@@ -95,7 +105,7 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
     if (ob?.amount) openingBalanceSigned = ob.direction === openingBalancePositiveDirection ? ob.amount : -ob.amount;
   }
 
-  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorReturns + priorPayouts);
+  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorPaymentDiscounts - priorReturns + priorPayouts);
 }
 
 export default getPersonRemaining;
