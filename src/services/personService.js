@@ -62,6 +62,14 @@ function escapeRegex(str) {
  * the exact same formula used inside a transaction when validating a new
  * payment/return/payout.
  *
+ * `TransferModel` (optional, Customer-only — CustomerDebtTransfer): debt moved
+ * between two customers (see customerDebtTransfer.service.js). Folded in as
+ * `- transferred out + transferred in`, exactly like personBalance.service.js's
+ * getPersonRemaining does — kept out of `paid` (it is not a payment) and
+ * surfaced as its own `transferredOut` / `transferredIn` figures. Also makes
+ * `remove` refuse to delete a customer who appears in any transfer, since
+ * that would orphan the record and silently erase (or invent) a debt.
+ *
  * `openingBalancePositiveDirection`: which of Customer.js/Supplier.js's two
  * `openingBalance.direction` values should push `remaining` UP for this
  * entity type — 'they_owe_us' for Customer, 'we_owe_them' for Supplier (the
@@ -73,7 +81,7 @@ function escapeRegex(str) {
  * every supplier opening balance. customer.service.js / supplier.service.js
  * each hardcode the correct value for their own entity type.
  */
-export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel, PayoutModel, openingBalancePositiveDirection }) {
+export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel, PayoutModel, TransferModel, openingBalancePositiveDirection }) {
   async function getTotals(personId) {
     const [result] = await TransactionModel.aggregate([
       { $match: { [refField]: new mongoose.Types.ObjectId(personId) } },
@@ -131,6 +139,29 @@ export function createPersonService({ Model, TransactionModel, refField, activit
         base.paidOut = paidOut;
         base.remaining += paidOut;
       }
+    }
+
+    // Debt transfers between customers (Customer only — see
+    // CustomerDebtTransfer.js): `- out + in`, same as getPersonRemaining.
+    // Deliberately NOT added to base.paid / base.total — a transfer is not a
+    // payment and not a sale, it only re-assigns who owes the money.
+    if (TransferModel) {
+      const pid = new mongoose.Types.ObjectId(personId);
+      const [transferResult] = await TransferModel.aggregate([
+        { $match: { $or: [{ fromCustomerId: pid }, { toCustomerId: pid }] } },
+        {
+          $group: {
+            _id: null,
+            out: { $sum: { $cond: [{ $eq: ['$fromCustomerId', pid] }, '$amount', 0] } },
+            in: { $sum: { $cond: [{ $eq: ['$toCustomerId', pid] }, '$amount', 0] } },
+          },
+        },
+      ]);
+      const transferredOut = transferResult?.out || 0;
+      const transferredIn = transferResult?.in || 0;
+      if (transferredOut) base.transferredOut = transferredOut;
+      if (transferredIn) base.transferredIn = transferredIn;
+      base.remaining += transferredIn - transferredOut;
     }
 
     // Opening balance (see Customer.js/Supplier.js) — folded in as a
@@ -246,7 +277,38 @@ export function createPersonService({ Model, TransactionModel, refField, activit
       );
     }
 
+    if (TransferModel) {
+      itemsPipeline.push(
+        {
+          $lookup: {
+            from: TransferModel.collection.name,
+            localField: '_id',
+            foreignField: 'fromCustomerId',
+            as: '_transfersOut',
+          },
+        },
+        {
+          $lookup: {
+            from: TransferModel.collection.name,
+            localField: '_id',
+            foreignField: 'toCustomerId',
+            as: '_transfersIn',
+          },
+        },
+        {
+          $addFields: {
+            'totals.transferredOut': { $sum: '$_transfersOut.amount' },
+            'totals.transferredIn': { $sum: '$_transfersIn.amount' },
+          },
+        },
+      );
+    }
+
     const excludeProjection = { _tx: 0 };
+    if (TransferModel) {
+      excludeProjection._transfersOut = 0;
+      excludeProjection._transfersIn = 0;
+    }
     if (PaymentModel) excludeProjection._payments = 0;
     if (ReturnModel) excludeProjection._returns = 0;
     if (ReturnModel && PayoutModel) excludeProjection._payouts = 0;
@@ -292,6 +354,20 @@ export function createPersonService({ Model, TransactionModel, refField, activit
         },
       },
     );
+
+    // Debt transfers between customers — same `- out + in` as getTotals.
+    if (TransferModel) {
+      itemsPipeline.push({
+        $addFields: {
+          'totals.remaining': {
+            $add: [
+              '$totals.remaining',
+              { $subtract: [{ $ifNull: ['$totals.transferredIn', 0] }, { $ifNull: ['$totals.transferredOut', 0] }] },
+            ],
+          },
+        },
+      });
+    }
 
     // Floor at 0 + surface any excess as creditOwed — always applied now
     // (a safe no-op whenever nothing pushed remaining negative), matching
@@ -499,6 +575,11 @@ export function createPersonService({ Model, TransactionModel, refField, activit
     if (PaymentModel) {
       const hasPayments = await PaymentModel.exists({ [refField]: id });
       if (hasPayments) throw new AppError(labels.deleteBlocked, 409, { code: 'HAS_TRANSACTIONS' });
+    }
+
+    if (TransferModel) {
+      const inTransfer = await TransferModel.exists({ $or: [{ fromCustomerId: id }, { toCustomerId: id }] });
+      if (inTransfer) throw new AppError(labels.deleteBlocked, 409, { code: 'HAS_TRANSACTIONS' });
     }
 
     const person = await Model.findById(id);

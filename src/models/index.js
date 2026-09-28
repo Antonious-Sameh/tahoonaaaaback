@@ -4,6 +4,7 @@ export { default as Supplier } from './Supplier.js';
 export { default as Sale } from './Sale.js';
 export { default as Purchase } from './Purchase.js';
 export { default as CustomerPayment } from './CustomerPayment.js';
+export { default as CustomerDebtTransfer } from './CustomerDebtTransfer.js';
 export { default as SalesReturn } from './SalesReturn.js';
 export { default as SupplierPayment } from './SupplierPayment.js';
 export { default as PurchaseReturn } from './PurchaseReturn.js';

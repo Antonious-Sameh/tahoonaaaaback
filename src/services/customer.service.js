@@ -3,6 +3,7 @@ import Sale from '../models/Sale.js';
 import CustomerPayment from '../models/CustomerPayment.js';
 import SalesReturn from '../models/SalesReturn.js';
 import CustomerCreditPayout from '../models/CustomerCreditPayout.js';
+import CustomerDebtTransfer from '../models/CustomerDebtTransfer.js';
 import { createPersonService } from './personService.js';
 
 export const customerService = createPersonService({
@@ -21,6 +22,10 @@ export const customerService = createPersonService({
   // CustomerCreditPayout.js / customerCreditPayout.service.js) — brings
   // creditOwed back down once the shop actually settles it.
   PayoutModel: CustomerCreditPayout,
+  // Debt moved between customers — see customerDebtTransfer.service.js.
+  // Customer only; folded into this person's balance by personService.js
+  // and blocks deleting a customer who appears in any transfer.
+  TransferModel: CustomerDebtTransfer,
   // See personService.js's createPersonService doc block for why this
   // differs from Supplier's.
   openingBalancePositiveDirection: 'they_owe_us',
