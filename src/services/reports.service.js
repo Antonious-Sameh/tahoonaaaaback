@@ -10,6 +10,7 @@ import SalesReturn from '../models/SalesReturn.js';
 import PurchaseReturn from '../models/PurchaseReturn.js';
 import CustomerCreditPayout from '../models/CustomerCreditPayout.js';
 import CustomerDebtTransfer from '../models/CustomerDebtTransfer.js';
+import CustomerLoan from '../models/CustomerLoan.js';
 import SupplierCreditReceipt from '../models/SupplierCreditReceipt.js';
 import { cairoRangeMatch } from '../utils/timezone.js';
 import { round2 } from '../models/shared/money.js';
@@ -81,12 +82,16 @@ function dateRangeMatch(from, to) {
  * personBalance.service.js. It moves debt from one row of this report to
  * another, so the report's total outstanding is unchanged by a transfer.
  *
+ * `LoanModel` (optional, Customer-only — CustomerLoan): unconditional cash
+ * advances given to a customer, added with a `+` — always increases their
+ * remaining, same as personService.js/personBalance.service.js.
+ *
  * See Customer.js/Supplier.js for why this can never be a Sale/Purchase/
  * CashboxTransaction — it must never appear in any OTHER report (Sales/
  * Purchases/Profit/Inventory all remain completely untouched by it), only
  * in this one person's own balance.
  */
-async function getPersonBalanceReport(Model, TransactionModel, refField, limit, PaymentModel, ReturnModel, PayoutModel, openingBalancePositiveDirection, TransferModel) {
+async function getPersonBalanceReport(Model, TransactionModel, refField, limit, PaymentModel, ReturnModel, PayoutModel, openingBalancePositiveDirection, TransferModel, LoanModel) {
   const pipeline = [
     {
       $lookup: {
@@ -211,13 +216,28 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
     );
   }
 
+  // Loans given — always `+`, same as personService.js.
+  if (LoanModel) {
+    pipeline.push(
+      {
+        $lookup: {
+          from: LoanModel.collection.name,
+          localField: '_id',
+          foreignField: refField,
+          as: '_loans',
+        },
+      },
+      { $addFields: { remaining: { $add: ['$remaining', { $sum: '$_loans.amount' }] } } },
+    );
+  }
+
   // Floor at 0 — always applied now (opening balance alone, even with no
   // ReturnModel/PayoutModel, can push remaining negative), matching
   // personService.js's own unconditional floor for the same reason.
   pipeline.push({ $addFields: { remaining: { $cond: [{ $lt: ['$remaining', 0] }, 0, '$remaining'] } } });
 
   pipeline.push(
-    { $project: { _tx: 0, _payments: 0, _returns: 0, _payouts: 0, _transfersOut: 0, _transfersIn: 0 } },
+    { $project: { _tx: 0, _payments: 0, _returns: 0, _payouts: 0, _transfersOut: 0, _transfersIn: 0, _loans: 0 } },
     {
       $facet: {
         summary: [
@@ -674,7 +694,7 @@ export async function getInventoryReport() {
 }
 
 export async function getCustomersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us', CustomerDebtTransfer);
+  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us', CustomerDebtTransfer, CustomerLoan);
   return { count, totalOutstanding, withBalanceCount, totalSettlements, topCustomers: top };
 }
 

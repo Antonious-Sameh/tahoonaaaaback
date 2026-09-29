@@ -4,6 +4,7 @@ import CustomerPayment from '../models/CustomerPayment.js';
 import SalesReturn from '../models/SalesReturn.js';
 import CustomerCreditPayout from '../models/CustomerCreditPayout.js';
 import CustomerDebtTransfer from '../models/CustomerDebtTransfer.js';
+import CustomerLoan from '../models/CustomerLoan.js';
 import { getPersonRemaining } from './personBalance.service.js';
 
 /**
@@ -24,6 +25,7 @@ export async function getCustomerRemaining(customerId, session) {
     // Debt moved between customers (see customerDebtTransfer.service.js) —
     // Customer only; Supplier never passes this.
     TransferModel: CustomerDebtTransfer,
+    LoanModel: CustomerLoan,
     PersonModel: Customer,
     // 'they_owe_us' (the customer owes the shop) is the SAME polarity as
     // Sale.total - Sale.paid being positive — see getPersonRemaining's own

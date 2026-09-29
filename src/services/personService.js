@@ -70,6 +70,12 @@ function escapeRegex(str) {
  * `remove` refuse to delete a customer who appears in any transfer, since
  * that would orphan the record and silently erase (or invent) a debt.
  *
+ * `LoanModel` (optional, Customer-only — CustomerLoan): unconditional cash
+ * advances given to this customer (see CustomerLoan.js /
+ * customerLoan.service.js) — added with a `+`, always increasing what they
+ * owe. Surfaced as its own `loansGiven` figure, kept out of `paid`/`total`
+ * (a loan is neither a sale nor a payment).
+ *
  * `openingBalancePositiveDirection`: which of Customer.js/Supplier.js's two
  * `openingBalance.direction` values should push `remaining` UP for this
  * entity type — 'they_owe_us' for Customer, 'we_owe_them' for Supplier (the
@@ -81,7 +87,7 @@ function escapeRegex(str) {
  * every supplier opening balance. customer.service.js / supplier.service.js
  * each hardcode the correct value for their own entity type.
  */
-export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel, PayoutModel, TransferModel, openingBalancePositiveDirection }) {
+export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel, PayoutModel, TransferModel, LoanModel, openingBalancePositiveDirection }) {
   async function getTotals(personId) {
     const [result] = await TransactionModel.aggregate([
       { $match: { [refField]: new mongoose.Types.ObjectId(personId) } },
@@ -162,6 +168,18 @@ export function createPersonService({ Model, TransactionModel, refField, activit
       if (transferredOut) base.transferredOut = transferredOut;
       if (transferredIn) base.transferredIn = transferredIn;
       base.remaining += transferredIn - transferredOut;
+    }
+
+    // Loans/advances given to the customer (Customer only — see
+    // CustomerLoan.js): always `+`, whatever the balance was before.
+    if (LoanModel) {
+      const [loanResult] = await LoanModel.aggregate([
+        { $match: { [refField]: new mongoose.Types.ObjectId(personId) } },
+        { $group: { _id: null, loaned: { $sum: '$amount' } } },
+      ]);
+      const loansGiven = loanResult?.loaned || 0;
+      if (loansGiven) base.loansGiven = loansGiven;
+      base.remaining += loansGiven;
     }
 
     // Opening balance (see Customer.js/Supplier.js) — folded in as a
@@ -304,11 +322,26 @@ export function createPersonService({ Model, TransactionModel, refField, activit
       );
     }
 
+    if (LoanModel) {
+      itemsPipeline.push(
+        {
+          $lookup: {
+            from: LoanModel.collection.name,
+            localField: '_id',
+            foreignField: refField,
+            as: '_loans',
+          },
+        },
+        { $addFields: { 'totals.loansGiven': { $sum: '$_loans.amount' } } },
+      );
+    }
+
     const excludeProjection = { _tx: 0 };
     if (TransferModel) {
       excludeProjection._transfersOut = 0;
       excludeProjection._transfersIn = 0;
     }
+    if (LoanModel) excludeProjection._loans = 0;
     if (PaymentModel) excludeProjection._payments = 0;
     if (ReturnModel) excludeProjection._returns = 0;
     if (ReturnModel && PayoutModel) excludeProjection._payouts = 0;
@@ -365,6 +398,15 @@ export function createPersonService({ Model, TransactionModel, refField, activit
               { $subtract: [{ $ifNull: ['$totals.transferredIn', 0] }, { $ifNull: ['$totals.transferredOut', 0] }] },
             ],
           },
+        },
+      });
+    }
+
+    // Loans given — always `+`, same as getTotals above.
+    if (LoanModel) {
+      itemsPipeline.push({
+        $addFields: {
+          'totals.remaining': { $add: ['$totals.remaining', { $ifNull: ['$totals.loansGiven', 0] }] },
         },
       });
     }
@@ -580,6 +622,11 @@ export function createPersonService({ Model, TransactionModel, refField, activit
     if (TransferModel) {
       const inTransfer = await TransferModel.exists({ $or: [{ fromCustomerId: id }, { toCustomerId: id }] });
       if (inTransfer) throw new AppError(labels.deleteBlocked, 409, { code: 'HAS_TRANSACTIONS' });
+    }
+
+    if (LoanModel) {
+      const hasLoans = await LoanModel.exists({ [refField]: id });
+      if (hasLoans) throw new AppError(labels.deleteBlocked, 409, { code: 'HAS_TRANSACTIONS' });
     }
 
     const person = await Model.findById(id);

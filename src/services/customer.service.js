@@ -4,6 +4,7 @@ import CustomerPayment from '../models/CustomerPayment.js';
 import SalesReturn from '../models/SalesReturn.js';
 import CustomerCreditPayout from '../models/CustomerCreditPayout.js';
 import CustomerDebtTransfer from '../models/CustomerDebtTransfer.js';
+import CustomerLoan from '../models/CustomerLoan.js';
 import { createPersonService } from './personService.js';
 
 export const customerService = createPersonService({
@@ -26,6 +27,10 @@ export const customerService = createPersonService({
   // Customer only; folded into this person's balance by personService.js
   // and blocks deleting a customer who appears in any transfer.
   TransferModel: CustomerDebtTransfer,
+  // Loans/advances handed to the customer — see CustomerLoan.js /
+  // customerLoan.service.js. Customer only; folded into this person's
+  // balance by personService.js the same way TransferModel is.
+  LoanModel: CustomerLoan,
   // See personService.js's createPersonService doc block for why this
   // differs from Supplier's.
   openingBalancePositiveDirection: 'they_owe_us',

@@ -73,12 +73,18 @@ import { round2 } from '../models/shared/money.js';
  * getPersonBalanceReport (this project computes the same balance in four
  * places; every term has to be added to all four in the same change).
  *
+ * `LoanModel` (optional, Customer-only — CustomerLoan): cash handed to this
+ * customer as an unconditional loan/advance (see customerLoan.service.js) —
+ * added with a `+`, same direction as an unpaid transaction: it always
+ * increases what this person owes, regardless of their balance beforehand.
+ * Unlike PayoutModel, it never depends on a creditOwed balance existing.
+ *
  * `session` is required (not optional) — every caller runs inside a
  * transaction anyway (see withTransaction in the callers), and a balance
  * check for money movement outside a transaction would defeat the whole
  * point of reading it consistently with the write that follows.
  */
-export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, PayoutModel, TransferModel, PersonModel, openingBalancePositiveDirection, refField, personId, session }) {
+export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, PayoutModel, TransferModel, LoanModel, PersonModel, openingBalancePositiveDirection, refField, personId, session }) {
   const [txAgg] = await TransactionModel.aggregate([
     { $match: { [refField]: personId } },
     { $group: { _id: null, total: { $sum: '$total' }, paid: { $sum: '$paid' } } },
@@ -126,6 +132,15 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
     transferredIn = transfersAgg?.in || 0;
   }
 
+  let priorLoans = 0;
+  if (LoanModel) {
+    const [loansAgg] = await LoanModel.aggregate([
+      { $match: { [refField]: personId } },
+      { $group: { _id: null, loaned: { $sum: '$amount' } } },
+    ]).session(session);
+    priorLoans = loansAgg?.loaned || 0;
+  }
+
   let openingBalanceSigned = 0;
   if (PersonModel) {
     const person = await PersonModel.findById(personId).select('openingBalance').session(session);
@@ -133,7 +148,7 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
     if (ob?.amount) openingBalanceSigned = ob.direction === openingBalancePositiveDirection ? ob.amount : -ob.amount;
   }
 
-  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorPaymentDiscounts - priorReturns + priorPayouts - transferredOut + transferredIn);
+  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorPaymentDiscounts - priorReturns + priorPayouts - transferredOut + transferredIn + priorLoans);
 }
 
 export default getPersonRemaining;
