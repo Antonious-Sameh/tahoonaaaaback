@@ -41,13 +41,21 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 
 const router = Router();
 
-// Stricter than the app-wide limiter (see app.js) — this key is long-lived
-// and meant for one server-to-server caller (System 5), so far fewer
-// requests are ever legitimate, and a tighter cap slows down key-guessing.
+// Sized for System 5's real usage: one dashboard screen fans out to several
+// calls here (e.g. a sales page = the sales list + a customer-name lookup,
+// a shop overview ≈ 7 calls), so the original 60 per 15 min was reached
+// after a few minutes of normal browsing. Set equal to the app-wide
+// limiter in app.js (300), which also applies to this path — anything
+// higher here would never take effect. Key-guessing stays impractical:
+// the key is 96 hex chars and every wrong attempt is logged by
+// requireAdminReadKey. Changing this affects ONLY /api/admin (System 5);
+// the shop's own routes keep their own limiters untouched.
+export const ADMIN_RATE_LIMIT_MAX = 300;
+
 router.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 60,
+    max: ADMIN_RATE_LIMIT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
   }),
@@ -156,6 +164,10 @@ const expenseListQuerySchema = z.object({
 });
 router.get('/expenses', validateQuery(expenseListQuerySchema), expenseController.list);
 router.get('/expenses/summary', expenseController.summary);
+// Every distinct reason actually recorded — the same list the shop's own
+// ExpensesPage uses for its filter dropdown (reason is free text, and the
+// list filter matches it exactly, so System 5 can't guess valid values).
+router.get('/expenses/reasons', expenseController.reasons);
 
 // ── Activity log & Audit log (history) ──────────────────────────────────
 const activityListQuerySchema = z.object({

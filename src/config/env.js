@@ -1,5 +1,11 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import { z } from 'zod';
+
+// Tests must never read the real .env: it holds this shop's live
+// MONGODB_URI, Cloudinary and JWT secrets. Running `npm test` on a machine
+// that has a real .env must not be able to reach production data.
+// tests/setup.js provides every variable the test suite needs.
+if (process.env.NODE_ENV !== 'test') dotenv.config();
 
 // Fail fast on startup with a clear message rather than surfacing a confusing
 // crash later (e.g. mid-request) when a required variable turns out missing.
