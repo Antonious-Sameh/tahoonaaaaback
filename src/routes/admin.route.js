@@ -12,6 +12,7 @@ import * as purchaseController from '../controllers/purchase.controller.js';
 import * as cashboxController from '../controllers/cashbox.controller.js';
 import * as expenseController from '../controllers/expense.controller.js';
 import * as reportsController from '../controllers/reports.controller.js';
+import * as dailyReportController from '../controllers/dailyReport.controller.js';
 import * as activityController from '../controllers/activity.controller.js';
 import * as auditLogController from '../controllers/auditLog.controller.js';
 import * as settingsController from '../controllers/settings.controller.js';
@@ -201,5 +202,12 @@ router.get('/reports/profit', validateQuery(reportsDateRangeSchema), reportsCont
 router.get('/reports/inventory', reportsController.inventory);
 router.get('/reports/customers', validateQuery(topListSchema), reportsController.customers);
 router.get('/reports/suppliers', validateQuery(topListSchema), reportsController.suppliers);
+// Day-by-day series for System 5's trend charts (new file, see
+// dailyReport.service.js). Both dates required; at most 370 days.
+const dailyReportSchema = z.object({
+  from: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
+  to: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+router.get('/reports/daily', validateQuery(dailyReportSchema), dailyReportController.daily);
 
 export default router;

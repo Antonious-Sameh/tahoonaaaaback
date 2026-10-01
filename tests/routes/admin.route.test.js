@@ -21,6 +21,10 @@ vi.mock('../../src/services/cashbox.service.js', () => ({
   getSummary: vi.fn(),
   createCashTransaction: vi.fn(),
 }));
+vi.mock('../../src/services/dailyReport.service.js', () => ({
+  getDailyReport: vi.fn(),
+}));
+
 vi.mock('../../src/services/expense.service.js', () => ({
   listExpenses: vi.fn(),
   getSummary: vi.fn(),
@@ -60,6 +64,7 @@ const saleService = await import('../../src/services/sale.service.js');
 const cashboxService = await import('../../src/services/cashbox.service.js');
 const reportsService = await import('../../src/services/reports.service.js');
 const expenseService = await import('../../src/services/expense.service.js');
+const dailyReportService = await import('../../src/services/dailyReport.service.js');
 const { customerService } = await import('../../src/services/customer.service.js');
 const { createApp } = await import('../../src/app.js');
 
@@ -118,6 +123,7 @@ describe('/api/admin is strictly read-only', () => {
       request(app).patch('/api/admin/settings').set(adminHeader()).send({ shopName: 'x' }),
       request(app).post(`/api/admin/customers`).set(adminHeader()).send({ name: 'x' }),
       request(app).post('/api/admin/expenses/reasons').set(adminHeader()).send({ reason: 'x' }),
+      request(app).post('/api/admin/reports/daily').set(adminHeader()).send({}),
     ]);
 
     // Express falls through to notFoundHandler (404) for a verb with no
@@ -256,5 +262,34 @@ describe('/api/admin rate limit', () => {
     const res = await request(app).get('/api/health');
 
     expect(res.headers['ratelimit-limit']).toBe('300'); // app-wide limiter, unchanged
+  });
+});
+
+describe('/api/admin/reports/daily (System 5 trend charts)', () => {
+  it('returns the day-by-day series for the range', async () => {
+    dailyReportService.getDailyReport.mockResolvedValue({ from: '2026-09-01', to: '2026-09-02', days: [{ date: '2026-09-01' }] });
+
+    const app = createApp();
+    const res = await request(app).get('/api/admin/reports/daily?from=2026-09-01&to=2026-09-02').set(adminHeader());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.days).toHaveLength(1);
+    expect(dailyReportService.getDailyReport).toHaveBeenCalledWith({ from: '2026-09-01', to: '2026-09-02' });
+  });
+
+  it('requires both dates in YYYY-MM-DD', async () => {
+    const app = createApp();
+    const missing = await request(app).get('/api/admin/reports/daily?from=2026-09-01').set(adminHeader());
+    const bad = await request(app).get('/api/admin/reports/daily?from=1-9-2026&to=2026-09-02').set(adminHeader());
+
+    expect(missing.status).toBe(400);
+    expect(bad.status).toBe(400);
+    expect(dailyReportService.getDailyReport).not.toHaveBeenCalled();
+  });
+
+  it('is gated by the admin key', async () => {
+    const app = createApp();
+    const res = await request(app).get('/api/admin/reports/daily?from=2026-09-01&to=2026-09-02');
+    expect(res.status).toBe(401);
   });
 });
