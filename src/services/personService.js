@@ -3,6 +3,7 @@ import { AppError } from '../middleware/errorHandler.js';
 import { recordActivity } from './activityLog.service.js';
 import { recordAuditLog } from './auditLog.service.js';
 import { round2 } from '../models/shared/money.js';
+import { getBalanceTransferEffect, balanceTransferEffectStages, accountHasBalanceTransfers } from './balanceTransferEffect.js';
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -76,6 +77,16 @@ function escapeRegex(str) {
  * owe. Surfaced as its own `loansGiven` figure, kept out of `paid`/`total`
  * (a loan is neither a sale nor a payment).
  *
+ * `BalanceTransferModel` + `accountType` (optional, Customer AND Supplier —
+ * AccountBalanceTransfer): a Customer <-> Supplier balance offset (see
+ * accountBalanceTransfer.service.js). Its signed effect on this person comes
+ * from balanceTransferEffect.js (shared with getPersonRemaining and the
+ * reports so the four copies of the balance formula cannot disagree) and is
+ * added to `remaining` BEFORE the floor at 0 — so an offset can legitimately
+ * move an account to/from `creditOwed`. Surfaced as `balanceTransferEffect`
+ * (only when non-zero), kept out of `paid`/`total`. Also blocks deleting a
+ * person who appears in any such transfer.
+ *
  * `openingBalancePositiveDirection`: which of Customer.js/Supplier.js's two
  * `openingBalance.direction` values should push `remaining` UP for this
  * entity type — 'they_owe_us' for Customer, 'we_owe_them' for Supplier (the
@@ -87,7 +98,7 @@ function escapeRegex(str) {
  * every supplier opening balance. customer.service.js / supplier.service.js
  * each hardcode the correct value for their own entity type.
  */
-export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel, PayoutModel, TransferModel, LoanModel, openingBalancePositiveDirection }) {
+export function createPersonService({ Model, TransactionModel, refField, activityType, entityType, labels, PaymentModel, ReturnModel, PayoutModel, TransferModel, LoanModel, BalanceTransferModel, accountType, openingBalancePositiveDirection }) {
   async function getTotals(personId) {
     const [result] = await TransactionModel.aggregate([
       { $match: { [refField]: new mongoose.Types.ObjectId(personId) } },
@@ -180,6 +191,14 @@ export function createPersonService({ Model, TransactionModel, refField, activit
       const loansGiven = loanResult?.loaned || 0;
       if (loansGiven) base.loansGiven = loansGiven;
       base.remaining += loansGiven;
+    }
+
+    // Customer <-> Supplier balance offsets (AccountBalanceTransfer) — signed
+    // effect, same term getPersonRemaining adds. Not part of paid/total.
+    if (BalanceTransferModel) {
+      const effect = await getBalanceTransferEffect({ BalanceTransferModel, accountType, personId });
+      if (effect) base.balanceTransferEffect = effect;
+      base.remaining += effect;
     }
 
     // Opening balance (see Customer.js/Supplier.js) — folded in as a
@@ -411,6 +430,18 @@ export function createPersonService({ Model, TransactionModel, refField, activit
       });
     }
 
+    // Customer <-> Supplier balance offsets — same signed term as getTotals.
+    if (BalanceTransferModel) {
+      itemsPipeline.push(
+        ...balanceTransferEffectStages({ BalanceTransferModel, accountType, outField: 'totals.balanceTransferEffect' }),
+        {
+          $addFields: {
+            'totals.remaining': { $add: ['$totals.remaining', '$totals.balanceTransferEffect'] },
+          },
+        },
+      );
+    }
+
     // Floor at 0 + surface any excess as creditOwed — always applied now
     // (a safe no-op whenever nothing pushed remaining negative), matching
     // getTotals above; see that function's own comment for why this no
@@ -627,6 +658,11 @@ export function createPersonService({ Model, TransactionModel, refField, activit
     if (LoanModel) {
       const hasLoans = await LoanModel.exists({ [refField]: id });
       if (hasLoans) throw new AppError(labels.deleteBlocked, 409, { code: 'HAS_TRANSACTIONS' });
+    }
+
+    if (BalanceTransferModel) {
+      const inBalanceTransfer = await accountHasBalanceTransfers({ BalanceTransferModel, accountType, personId: id });
+      if (inBalanceTransfer) throw new AppError(labels.deleteBlocked, 409, { code: 'HAS_TRANSACTIONS' });
     }
 
     const person = await Model.findById(id);

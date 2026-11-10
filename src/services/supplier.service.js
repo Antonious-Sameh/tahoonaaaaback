@@ -3,6 +3,7 @@ import Purchase from '../models/Purchase.js';
 import SupplierPayment from '../models/SupplierPayment.js';
 import PurchaseReturn from '../models/PurchaseReturn.js';
 import SupplierCreditReceipt from '../models/SupplierCreditReceipt.js';
+import AccountBalanceTransfer from '../models/AccountBalanceTransfer.js';
 import { createPersonService } from './personService.js';
 
 export const supplierService = createPersonService({
@@ -23,6 +24,9 @@ export const supplierService = createPersonService({
   // (see SupplierCreditReceipt.js / supplierCreditReceipt.service.js) —
   // brings creditOwed back down once the supplier actually settles it.
   PayoutModel: SupplierCreditReceipt,
+  // Customer <-> Supplier balance offsets — see accountBalanceTransfer.service.js.
+  BalanceTransferModel: AccountBalanceTransfer,
+  accountType: 'supplier',
   // See personService.js's createPersonService doc block for why this is
   // the OPPOSITE value from Customer's — this was the confirmed bug.
   openingBalancePositiveDirection: 'we_owe_them',

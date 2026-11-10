@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { round2 } from '../models/shared/money.js';
+import { getBalanceTransferEffect } from './balanceTransferEffect.js';
 
 /**
  * Single source of truth for "how much does this person (customer or
@@ -79,12 +80,20 @@ import { round2 } from '../models/shared/money.js';
  * increases what this person owes, regardless of their balance beforehand.
  * Unlike PayoutModel, it never depends on a creditOwed balance existing.
  *
+ * `BalanceTransferModel` + `accountType` (optional, both Customer AND
+ * Supplier — AccountBalanceTransfer): a Customer <-> Supplier balance offset
+ * (see accountBalanceTransfer.service.js). Contributes the SIGNED sum of that
+ * account's transfer effects (balanceTransferEffect.js) — already in this
+ * function's own orientation (positive = customer owes the shop / the shop
+ * owes the supplier), so it is simply added. 0 for any account with no such
+ * transfer, so every existing balance is unchanged.
+ *
  * `session` is required (not optional) — every caller runs inside a
  * transaction anyway (see withTransaction in the callers), and a balance
  * check for money movement outside a transaction would defeat the whole
  * point of reading it consistently with the write that follows.
  */
-export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, PayoutModel, TransferModel, LoanModel, PersonModel, openingBalancePositiveDirection, refField, personId, session }) {
+export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, PayoutModel, TransferModel, LoanModel, BalanceTransferModel, accountType, PersonModel, openingBalancePositiveDirection, refField, personId, session }) {
   const [txAgg] = await TransactionModel.aggregate([
     { $match: { [refField]: personId } },
     { $group: { _id: null, total: { $sum: '$total' }, paid: { $sum: '$paid' } } },
@@ -141,6 +150,11 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
     priorLoans = loansAgg?.loaned || 0;
   }
 
+  let balanceTransferEffect = 0;
+  if (BalanceTransferModel) {
+    balanceTransferEffect = await getBalanceTransferEffect({ BalanceTransferModel, accountType, personId, session });
+  }
+
   let openingBalanceSigned = 0;
   if (PersonModel) {
     const person = await PersonModel.findById(personId).select('openingBalance').session(session);
@@ -148,7 +162,7 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
     if (ob?.amount) openingBalanceSigned = ob.direction === openingBalancePositiveDirection ? ob.amount : -ob.amount;
   }
 
-  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorPaymentDiscounts - priorReturns + priorPayouts - transferredOut + transferredIn + priorLoans);
+  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorPaymentDiscounts - priorReturns + priorPayouts - transferredOut + transferredIn + priorLoans + balanceTransferEffect);
 }
 
 export default getPersonRemaining;

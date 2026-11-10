@@ -10,6 +10,8 @@ import SalesReturn from '../models/SalesReturn.js';
 import PurchaseReturn from '../models/PurchaseReturn.js';
 import CustomerCreditPayout from '../models/CustomerCreditPayout.js';
 import CustomerDebtTransfer from '../models/CustomerDebtTransfer.js';
+import AccountBalanceTransfer from '../models/AccountBalanceTransfer.js';
+import { balanceTransferEffectStages } from './balanceTransferEffect.js';
 import CustomerLoan from '../models/CustomerLoan.js';
 import SupplierCreditReceipt from '../models/SupplierCreditReceipt.js';
 import { cairoRangeMatch } from '../utils/timezone.js';
@@ -86,12 +88,18 @@ function dateRangeMatch(from, to) {
  * advances given to a customer, added with a `+` — always increases their
  * remaining, same as personService.js/personBalance.service.js.
  *
+ * `BalanceTransferModel` + `accountType` (optional, Customer AND Supplier —
+ * AccountBalanceTransfer): Customer <-> Supplier balance offsets, folded in
+ * as their signed effect via balanceTransferEffect.js (the same term
+ * personService.js / personBalance.service.js add). 0 for any account with no
+ * such transfer, so existing rows are unchanged.
+ *
  * See Customer.js/Supplier.js for why this can never be a Sale/Purchase/
  * CashboxTransaction — it must never appear in any OTHER report (Sales/
  * Purchases/Profit/Inventory all remain completely untouched by it), only
  * in this one person's own balance.
  */
-async function getPersonBalanceReport(Model, TransactionModel, refField, limit, PaymentModel, ReturnModel, PayoutModel, openingBalancePositiveDirection, TransferModel, LoanModel) {
+async function getPersonBalanceReport(Model, TransactionModel, refField, limit, PaymentModel, ReturnModel, PayoutModel, openingBalancePositiveDirection, TransferModel, LoanModel, BalanceTransferModel, accountType) {
   const pipeline = [
     {
       $lookup: {
@@ -228,6 +236,15 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
         },
       },
       { $addFields: { remaining: { $add: ['$remaining', { $sum: '$_loans.amount' }] } } },
+    );
+  }
+
+  // Customer <-> Supplier balance offsets — signed effect, before the floor.
+  if (BalanceTransferModel) {
+    pipeline.push(
+      ...balanceTransferEffectStages({ BalanceTransferModel, accountType, outField: '_balanceTransferEffect' }),
+      { $addFields: { remaining: { $add: ['$remaining', '$_balanceTransferEffect'] } } },
+      { $project: { _balanceTransferEffect: 0 } },
     );
   }
 
@@ -518,7 +535,7 @@ export async function getPurchasesReport({ from, to } = {}) {
         },
       },
     ]),
-    getPersonBalanceReport(Supplier, Purchase, 'supplierId', FULL_LIST_SAFETY_CAP, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them'),
+    getPersonBalanceReport(Supplier, Purchase, 'supplierId', FULL_LIST_SAFETY_CAP, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them', undefined, undefined, AccountBalanceTransfer, 'supplier'),
   ]);
 
   const overall = overallResult[0] || { total: 0, count: 0, paid: 0, creditOutstandingAtPurchase: 0 };
@@ -694,11 +711,11 @@ export async function getInventoryReport() {
 }
 
 export async function getCustomersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us', CustomerDebtTransfer, CustomerLoan);
+  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us', CustomerDebtTransfer, CustomerLoan, AccountBalanceTransfer, 'customer');
   return { count, totalOutstanding, withBalanceCount, totalSettlements, topCustomers: top };
 }
 
 export async function getSuppliersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them');
+  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them', undefined, undefined, AccountBalanceTransfer, 'supplier');
   return { count, totalOutstanding, withBalanceCount, totalSettlements, topSuppliers: top };
 }
