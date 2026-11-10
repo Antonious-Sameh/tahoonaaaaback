@@ -5,7 +5,6 @@ export { default as Sale } from './Sale.js';
 export { default as Purchase } from './Purchase.js';
 export { default as CustomerPayment } from './CustomerPayment.js';
 export { default as CustomerDebtTransfer } from './CustomerDebtTransfer.js';
-export { default as AccountBalanceTransfer } from './AccountBalanceTransfer.js';
 export { default as CustomerLoan } from './CustomerLoan.js';
 export { default as SalesReturn } from './SalesReturn.js';
 export { default as SupplierPayment } from './SupplierPayment.js';

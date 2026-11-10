@@ -3,7 +3,6 @@ import Supplier from '../models/Supplier.js';
 import SupplierPayment from '../models/SupplierPayment.js';
 import PurchaseReturn from '../models/PurchaseReturn.js';
 import SupplierCreditReceipt from '../models/SupplierCreditReceipt.js';
-import AccountBalanceTransfer from '../models/AccountBalanceTransfer.js';
 import { getPersonRemaining } from './personBalance.service.js';
 
 /**
@@ -21,9 +20,6 @@ export async function getSupplierRemaining(supplierId, session) {
     PaymentModel: SupplierPayment,
     ReturnModel: PurchaseReturn,
     PayoutModel: SupplierCreditReceipt,
-    // Customer <-> Supplier balance offsets (see accountBalanceTransfer.service.js).
-    BalanceTransferModel: AccountBalanceTransfer,
-    accountType: 'supplier',
     PersonModel: Supplier,
     // 'we_owe_them' (the shop owes the supplier) is the SAME polarity as
     // Purchase.total - Purchase.paid being positive — the OPPOSITE label
