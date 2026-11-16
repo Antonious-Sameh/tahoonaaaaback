@@ -91,7 +91,11 @@ function dateRangeMatch(from, to) {
  * Purchases/Profit/Inventory all remain completely untouched by it), only
  * in this one person's own balance.
  */
-async function getPersonBalanceReport(Model, TransactionModel, refField, limit, PaymentModel, ReturnModel, PayoutModel, openingBalancePositiveDirection, TransferModel, LoanModel) {
+// Supplier side of CustomerDebtTransfer: supplier id fields, and sign -1
+// because a supplier's raw figure is "we owe them" (see personBalance.service.js).
+const SUPPLIER_TRANSFER_OPTS = { transferFromField: 'fromSupplierId', transferToField: 'toSupplierId', transferSign: -1 };
+
+async function getPersonBalanceReport(Model, TransactionModel, refField, limit, PaymentModel, ReturnModel, PayoutModel, openingBalancePositiveDirection, TransferModel, LoanModel, { transferFromField = 'fromCustomerId', transferToField = 'toCustomerId', transferSign = 1 } = {}) {
   const pipeline = [
     {
       $lookup: {
@@ -191,7 +195,7 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
         $lookup: {
           from: TransferModel.collection.name,
           localField: '_id',
-          foreignField: 'fromCustomerId',
+          foreignField: transferFromField,
           as: '_transfersOut',
         },
       },
@@ -199,7 +203,7 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
         $lookup: {
           from: TransferModel.collection.name,
           localField: '_id',
-          foreignField: 'toCustomerId',
+          foreignField: transferToField,
           as: '_transfersIn',
         },
       },
@@ -208,7 +212,7 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
           remaining: {
             $add: [
               '$remaining',
-              { $subtract: [{ $sum: '$_transfersIn.amount' }, { $sum: '$_transfersOut.amount' }] },
+              { $multiply: [transferSign, { $subtract: [{ $sum: '$_transfersIn.amount' }, { $sum: '$_transfersOut.amount' }] }] },
             ],
           },
         },
@@ -518,7 +522,7 @@ export async function getPurchasesReport({ from, to } = {}) {
         },
       },
     ]),
-    getPersonBalanceReport(Supplier, Purchase, 'supplierId', FULL_LIST_SAFETY_CAP, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them'),
+    getPersonBalanceReport(Supplier, Purchase, 'supplierId', FULL_LIST_SAFETY_CAP, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them', CustomerDebtTransfer, undefined, SUPPLIER_TRANSFER_OPTS),
   ]);
 
   const overall = overallResult[0] || { total: 0, count: 0, paid: 0, creditOutstandingAtPurchase: 0 };
@@ -699,6 +703,6 @@ export async function getCustomersReport({ limit = 8 } = {}) {
 }
 
 export async function getSuppliersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them');
+  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them', CustomerDebtTransfer, undefined, SUPPLIER_TRANSFER_OPTS);
   return { count, totalOutstanding, withBalanceCount, totalSettlements, topSuppliers: top };
 }

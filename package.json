@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "sync-indexes": "node scripts/sync-indexes.js",
     "seed-password": "node scripts/seed-shop-password.js",
-    "smoke-test": "node scripts/smoke-test.js"
+    "smoke-test": "node scripts/smoke-test.js",
+    "test:debt-transfer": "node scripts/test-debt-transfer.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

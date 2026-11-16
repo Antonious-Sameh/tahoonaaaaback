@@ -73,6 +73,17 @@ import { round2 } from '../models/shared/money.js';
  * getPersonBalanceReport (this project computes the same balance in four
  * places; every term has to be added to all four in the same change).
  *
+ * Transfers can now also involve suppliers (see CustomerDebtTransfer.js):
+ * `transferFromField`/`transferToField` say which id fields of the transfer
+ * document point at THIS kind of person (customer ids by default, supplier
+ * ids for a supplier), and `transferSign` is how a transfer moves THIS kind
+ * of person's raw figure. A transfer always means "debt owed TO the shop":
+ * out lowers the source's debt, in raises the destination's. For a customer
+ * the raw figure is "they owe us" (+1: `+ in - out`, exactly as before). For
+ * a supplier the raw figure is "we owe them", so a debt moving onto the
+ * supplier REDUCES it (-1: `- in + out`) — never "reuse the customer's sign".
+ * Defaults are the customer's values, so existing callers are unchanged.
+ *
  * `LoanModel` (optional, Customer-only — CustomerLoan): cash handed to this
  * customer as an unconditional loan/advance (see customerLoan.service.js) —
  * added with a `+`, same direction as an unpaid transaction: it always
@@ -84,7 +95,7 @@ import { round2 } from '../models/shared/money.js';
  * check for money movement outside a transaction would defeat the whole
  * point of reading it consistently with the write that follows.
  */
-export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, PayoutModel, TransferModel, LoanModel, PersonModel, openingBalancePositiveDirection, refField, personId, session }) {
+export async function getPersonRemaining({ TransactionModel, PaymentModel, ReturnModel, PayoutModel, TransferModel, transferFromField = 'fromCustomerId', transferToField = 'toCustomerId', transferSign = 1, LoanModel, PersonModel, openingBalancePositiveDirection, refField, personId, session }) {
   const [txAgg] = await TransactionModel.aggregate([
     { $match: { [refField]: personId } },
     { $group: { _id: null, total: { $sum: '$total' }, paid: { $sum: '$paid' } } },
@@ -119,12 +130,12 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
   if (TransferModel) {
     const pid = new mongoose.Types.ObjectId(personId);
     const [transfersAgg] = await TransferModel.aggregate([
-      { $match: { $or: [{ fromCustomerId: pid }, { toCustomerId: pid }] } },
+      { $match: { $or: [{ [transferFromField]: pid }, { [transferToField]: pid }] } },
       {
         $group: {
           _id: null,
-          out: { $sum: { $cond: [{ $eq: ['$fromCustomerId', pid] }, '$amount', 0] } },
-          in: { $sum: { $cond: [{ $eq: ['$toCustomerId', pid] }, '$amount', 0] } },
+          out: { $sum: { $cond: [{ $eq: [`$${transferFromField}`, pid] }, '$amount', 0] } },
+          in: { $sum: { $cond: [{ $eq: [`$${transferToField}`, pid] }, '$amount', 0] } },
         },
       },
     ]).session(session);
@@ -148,7 +159,7 @@ export async function getPersonRemaining({ TransactionModel, PaymentModel, Retur
     if (ob?.amount) openingBalanceSigned = ob.direction === openingBalancePositiveDirection ? ob.amount : -ob.amount;
   }
 
-  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorPaymentDiscounts - priorReturns + priorPayouts - transferredOut + transferredIn + priorLoans);
+  return round2(openingBalanceSigned + txTotal - txPaid - priorPayments - priorPaymentDiscounts - priorReturns + priorPayouts + transferSign * (transferredIn - transferredOut) + priorLoans);
 }
 
 export default getPersonRemaining;

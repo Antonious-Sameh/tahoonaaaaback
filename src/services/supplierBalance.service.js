@@ -3,6 +3,7 @@ import Supplier from '../models/Supplier.js';
 import SupplierPayment from '../models/SupplierPayment.js';
 import PurchaseReturn from '../models/PurchaseReturn.js';
 import SupplierCreditReceipt from '../models/SupplierCreditReceipt.js';
+import CustomerDebtTransfer from '../models/CustomerDebtTransfer.js';
 import { getPersonRemaining } from './personBalance.service.js';
 
 /**
@@ -20,6 +21,13 @@ export async function getSupplierRemaining(supplierId, session) {
     PaymentModel: SupplierPayment,
     ReturnModel: PurchaseReturn,
     PayoutModel: SupplierCreditReceipt,
+    // Debt moved between customers/suppliers (see customerDebtTransfer.service.js).
+    // A supplier's raw figure is "we owe them", so debt moved ONTO the supplier
+    // lowers it and debt moved OFF the supplier raises it: sign -1.
+    TransferModel: CustomerDebtTransfer,
+    transferFromField: 'fromSupplierId',
+    transferToField: 'toSupplierId',
+    transferSign: -1,
     PersonModel: Supplier,
     // 'we_owe_them' (the shop owes the supplier) is the SAME polarity as
     // Purchase.total - Purchase.paid being positive — the OPPOSITE label
