@@ -65,8 +65,9 @@ function dateRangeMatch(from, to) {
  * against a creditOwed balance, see CustomerCreditPayout.js /
  * SupplierCreditReceipt.js — adds back, the same "opposite direction from
  * returns" logic personBalance.service.js's own doc block explains). All
- * three floored together at 0 — this report only ever needs `remaining`,
- * never a `creditOwed` figure.
+ * three floored together at 0 — `remaining` is the floored figure; the
+ * negative excess is reported separately as `creditOwed` (per row, and as
+ * `totalCreditOwed` in the summary) so it never disappears from the totals.
  *
  * `openingBalance` (read directly off the person document, always present
  * as a schema default even when unset) is folded in as the STARTING term,
@@ -76,11 +77,13 @@ function dateRangeMatch(from, to) {
  * why, and for the confirmed bug this parameterization fixes: a customer's
  * raw remaining is positive when THEY owe MORE, a supplier's is positive
  * when WE owe MORE, so the same direction label pushes them opposite ways).
- * `TransferModel` (optional, Customer-only — CustomerDebtTransfer): debt
- * moved between two customers (see customerDebtTransfer.service.js), folded
- * in as `- transferred out + transferred in` exactly like personService.js /
- * personBalance.service.js. It moves debt from one row of this report to
- * another, so the report's total outstanding is unchanged by a transfer.
+ * `TransferModel` (optional — CustomerDebtTransfer): debt moved between
+ * customers and/or suppliers (see customerDebtTransfer.service.js), folded
+ * in as `sign * (transferred in - transferred out)` exactly like
+ * personService.js / personBalance.service.js (sign +1 customers, -1
+ * suppliers). Between two customers it only moves debt from one row to
+ * another; across kinds the amount leaves one report and lands in the other
+ * (as `remaining` or, for a supplier the shop did not owe, `creditOwed`).
  *
  * `LoanModel` (optional, Customer-only — CustomerLoan): unconditional cash
  * advances given to a customer, added with a `+` — always increases their
@@ -238,7 +241,22 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
   // Floor at 0 — always applied now (opening balance alone, even with no
   // ReturnModel/PayoutModel, can push remaining negative), matching
   // personService.js's own unconditional floor for the same reason.
-  pipeline.push({ $addFields: { remaining: { $cond: [{ $lt: ['$remaining', 0] }, 0, '$remaining'] } } });
+  //
+  // The negative excess is NOT thrown away: it is the same `creditOwed`
+  // figure personService.getTotals surfaces per person (customer: the shop
+  // owes them; supplier: THEY owe the shop — e.g. debt transferred onto a
+  // supplier, or a purchase return worth more than the shop owed). Each
+  // person lands in exactly one of the two buckets (`remaining` > 0 XOR
+  // `creditOwed` > 0), so summing both across everyone never counts an amount
+  // twice. Previously this excess silently vanished from every report total,
+  // which is why a customer->supplier transfer lowered the customers' total
+  // but appeared nowhere on the suppliers' side.
+  pipeline.push({
+    $addFields: {
+      creditOwed: { $cond: [{ $lt: ['$remaining', 0] }, { $multiply: ['$remaining', -1] }, 0] },
+      remaining: { $cond: [{ $lt: ['$remaining', 0] }, 0, '$remaining'] },
+    },
+  });
 
   pipeline.push(
     { $project: { _tx: 0, _payments: 0, _returns: 0, _payouts: 0, _transfersOut: 0, _transfersIn: 0, _loans: 0 } },
@@ -251,6 +269,10 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
               count: { $sum: 1 },
               totalOutstanding: { $sum: '$remaining' },
               withBalanceCount: { $sum: { $cond: [{ $gt: ['$remaining', 0] }, 1, 0] } },
+              // The opposite direction (see the floor above): money owed to
+              // the shop by suppliers / owed by the shop to customers.
+              totalCreditOwed: { $sum: '$creditOwed' },
+              withCreditCount: { $sum: { $cond: [{ $gt: ['$creditOwed', 0] }, 1, 0] } },
               // Total settlements/write-offs given across everyone (Customer
               // only for now) — surfaced as its own figure so it stays
               // visible in the report rather than silently vanishing into
@@ -266,8 +288,13 @@ async function getPersonBalanceReport(Model, TransactionModel, refField, limit, 
 
   const [result] = await Model.aggregate(pipeline);
 
-  const summary = result.summary[0] || { count: 0, totalOutstanding: 0, withBalanceCount: 0, totalSettlements: 0 };
-  return { ...summary, top: result.top };
+  const summary = result.summary[0] || { count: 0, totalOutstanding: 0, withBalanceCount: 0, totalCreditOwed: 0, withCreditCount: 0, totalSettlements: 0 };
+  return {
+    ...summary,
+    totalOutstanding: round2(summary.totalOutstanding || 0),
+    totalCreditOwed: round2(summary.totalCreditOwed || 0),
+    top: result.top,
+  };
 }
 
 /**
@@ -697,12 +724,39 @@ export async function getInventoryReport() {
   };
 }
 
+/**
+ * Customers tab. `totalOutstanding` (what customers owe the shop) is exactly
+ * what it always was; `totalCreditOwed` is the new, separate figure for the
+ * opposite direction (what the shop owes customers, e.g. after a return on a
+ * fully-paid sale). Never mixed into `totalOutstanding`.
+ */
 export async function getCustomersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us', CustomerDebtTransfer, CustomerLoan);
-  return { count, totalOutstanding, withBalanceCount, totalSettlements, topCustomers: top };
+  const { count, totalOutstanding, withBalanceCount, totalCreditOwed, withCreditCount, totalSettlements, top } = await getPersonBalanceReport(Customer, Sale, 'customerId', limit, CustomerPayment, SalesReturn, CustomerCreditPayout, 'they_owe_us', CustomerDebtTransfer, CustomerLoan);
+  return { count, totalOutstanding, withBalanceCount, totalCreditOwed, withCreditCount, totalSettlements, topCustomers: top };
 }
 
+/**
+ * Suppliers tab.
+ *  - `totalOutstanding` / `withBalanceCount`: what the SHOP owes suppliers
+ *    (unchanged meaning).
+ *  - `totalCreditOwed` / `withCreditCount`: what suppliers owe the SHOP
+ *    (debt transferred onto a supplier, or a purchase return larger than the
+ *    shop owed). This is the figure that was missing from the reports.
+ *  - `netOutstanding` = totalOutstanding - totalCreditOwed: the shop's net
+ *    position with all suppliers together (positive = the shop owes net,
+ *    negative = suppliers owe the shop net). Each supplier is counted in
+ *    exactly one of the two buckets, so nothing is double counted.
+ */
 export async function getSuppliersReport({ limit = 8 } = {}) {
-  const { count, totalOutstanding, withBalanceCount, totalSettlements, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them', CustomerDebtTransfer, undefined, SUPPLIER_TRANSFER_OPTS);
-  return { count, totalOutstanding, withBalanceCount, totalSettlements, topSuppliers: top };
+  const { count, totalOutstanding, withBalanceCount, totalCreditOwed, withCreditCount, totalSettlements, top } = await getPersonBalanceReport(Supplier, Purchase, 'supplierId', limit, SupplierPayment, PurchaseReturn, SupplierCreditReceipt, 'we_owe_them', CustomerDebtTransfer, undefined, SUPPLIER_TRANSFER_OPTS);
+  return {
+    count,
+    totalOutstanding,
+    withBalanceCount,
+    totalCreditOwed,
+    withCreditCount,
+    netOutstanding: round2(totalOutstanding - totalCreditOwed),
+    totalSettlements,
+    topSuppliers: top,
+  };
 }

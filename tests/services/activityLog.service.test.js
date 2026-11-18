@@ -38,6 +38,18 @@ describe('recordActivity', () => {
     );
   });
 
+  it('does not store relatedTypes when it adds nothing beyond type (e.g. customer -> customer transfer)', async () => {
+    await recordActivity({ type: 'customer', description: 'x', relatedTypes: ['customer', 'customer'] });
+    expect(activityLogMocks.create.mock.calls[0][0][0]).not.toHaveProperty('relatedTypes');
+  });
+
+  it('stores relatedTypes (sender first, deduplicated) for a transfer across customer and supplier', async () => {
+    await recordActivity({ type: 'supplier', description: 'x', relatedTypes: ['supplier', 'customer'] });
+    expect(activityLogMocks.create.mock.calls[0][0][0].relatedTypes).toEqual(['supplier', 'customer']);
+    await recordActivity({ type: 'customer', description: 'x', relatedTypes: ['customer', 'supplier'] });
+    expect(activityLogMocks.create.mock.calls[1][0][0].relatedTypes).toEqual(['customer', 'supplier']);
+  });
+
   it('forwards a transaction session when given one, so the entry only commits with the rest of the transaction', async () => {
     const fakeSession = { id: 'fake-session' };
     await recordActivity({ type: 'sale', description: 'وصف' }, { session: fakeSession });
@@ -61,7 +73,7 @@ describe('listActivity', () => {
     activityLogMocks.aggregate.mockReturnValue(mockAggregate([{ items: [], totalCount: [] }]));
     await listActivity({ type: 'sale' });
     const pipeline = activityLogMocks.aggregate.mock.calls[0][0];
-    expect(pipeline.find((s) => s.$match).$match).toEqual({ type: 'sale' });
+    expect(pipeline.find((s) => s.$match).$match).toEqual({ $or: [{ type: 'sale' }, { relatedTypes: 'sale' }] });
   });
 
   it('ignores type="all"', async () => {

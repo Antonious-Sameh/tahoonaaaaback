@@ -64,7 +64,11 @@ const customerDebtTransferSchema = new Schema(
     toBalanceAfter: moneyField({ required: true, min: Number.MIN_SAFE_INTEGER }),
     note: { type: String, default: '', trim: true, maxlength: 500 },
     date: { type: Date, required: true, default: Date.now },
-    idempotencyKey: { type: String, default: null, trim: true, maxlength: 200 },
+    // No default: a sparse unique index still indexes an explicit `null`, so a
+    // stored null would make the SECOND transfer submitted without a key fail
+    // with a duplicate-key error. Left absent, a keyless transfer is simply not
+    // in the index. (Older documents that already hold null are unaffected.)
+    idempotencyKey: { type: String, default: undefined, trim: true, maxlength: 200 },
   },
   { timestamps: true },
 );

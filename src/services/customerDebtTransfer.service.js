@@ -215,7 +215,7 @@ export async function createCustomerDebtTransfer({ fromCustomerId, fromSupplierI
           fromBalanceAfter,
           toBalanceAfter,
           note: note || '',
-          idempotencyKey: key,
+          idempotencyKey: key || undefined,
         }],
         { session },
       );
@@ -235,6 +235,8 @@ export async function createCustomerDebtTransfer({ fromCustomerId, fromSupplierI
         description: `تم نقل مديونية بمبلغ ${amountNum} من ${fromKind.label} ${from.name} إلى ${toKind.label} ${to.name}`,
         amount: amountNum,
         refId: created._id,
+        // One entry, visible under BOTH sides' filters (customers/suppliers).
+        relatedTypes: [fromKind.activityType, toKind.activityType],
       },
       { session },
     );

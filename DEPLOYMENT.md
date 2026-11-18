@@ -90,7 +90,16 @@ npm run sync-indexes      # creates every model's declared indexes on Atlas
 npm run seed-password -- "choose-a-real-shop-password-here"
 ```
 
-`sync-indexes` is safe to re-run any time indexes change in the future.
+`sync-indexes` is meant for a FRESH database. On an existing one it also
+DROPS any index the code does not declare, so do not re-run it on production
+to pick up a new index. For the two supplier indexes of debt transfers use the
+additive script instead (dry run first, then `--apply`):
+
+```bash
+npm run create-debt-transfer-indexes            # shows what is missing, changes nothing
+npm run create-debt-transfer-indexes -- --apply # creates only the missing two
+```
+
 `seed-password` is for first-time setup only — after this, change the
 password through the app itself (Settings → تغيير كلمة المرور), which
 correctly signs out other devices; re-running the seed script is only for

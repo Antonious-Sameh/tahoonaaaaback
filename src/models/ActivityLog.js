@@ -20,6 +20,13 @@ const activityLogSchema = new Schema(
     // Loosely typed on purpose — the target collection depends on `type`,
     // same reasoning as CashboxTransaction.refId.
     refId: { type: Schema.Types.ObjectId, default: null },
+    // Extra activity types this single entry should ALSO show up under in the
+    // type filter. Used by a debt transfer between a customer and a supplier:
+    // one entry (so the unfiltered feed lists it once), stored with the
+    // sender's `type` as before, and `relatedTypes: ['customer', 'supplier']`
+    // so BOTH the customers and the suppliers filter find it. Absent on every
+    // older entry, which keeps filtering by `type` alone, exactly as before.
+    relatedTypes: { type: [{ type: String, enum: ACTIVITY_TYPES }], default: undefined },
     date: { type: Date, required: true, default: Date.now },
   },
   { timestamps: true },

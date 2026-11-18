@@ -182,7 +182,7 @@ describe('getCustomersReport', () => {
     );
     const report = await getCustomersReport({ limit: 8 });
     expect(report).toEqual({
-      count: 10, totalOutstanding: 3000, withBalanceCount: 4, topCustomers: [{ name: 'أحمد', total: 1000 }],
+      count: 10, totalOutstanding: 3000, withBalanceCount: 4, totalCreditOwed: 0, topCustomers: [{ name: 'أحمد', total: 1000 }],
     });
     const pipeline = customerMocks.aggregate.mock.calls[0][0];
     const lookupStage = pipeline.find((s) => s.$lookup);
@@ -192,7 +192,7 @@ describe('getCustomersReport', () => {
   it('defaults to zeros when there are no customers', async () => {
     customerMocks.aggregate.mockReturnValue(mockAggregate([{ summary: [], top: [] }]));
     const report = await getCustomersReport({});
-    expect(report).toEqual({ count: 0, totalOutstanding: 0, withBalanceCount: 0, topCustomers: [] });
+    expect(report).toEqual({ count: 0, totalOutstanding: 0, withBalanceCount: 0, totalCreditOwed: 0, withCreditCount: 0, topCustomers: [] });
   });
 });
 
@@ -206,6 +206,24 @@ describe('getSuppliersReport', () => {
     const pipeline = supplierMocks.aggregate.mock.calls[0][0];
     const lookupStage = pipeline.find((s) => s.$lookup);
     expect(lookupStage.$lookup).toMatchObject({ from: 'purchases', foreignField: 'supplierId' });
+  });
+
+  it('exposes what suppliers owe the shop (creditOwed) and the net, never mixed into totalOutstanding', async () => {
+    supplierMocks.aggregate.mockReturnValue(
+      mockAggregate([{ summary: [{ count: 3, totalOutstanding: 900, withBalanceCount: 1, totalCreditOwed: 3000, withCreditCount: 2 }], top: [] }]),
+    );
+    const report = await getSuppliersReport({ limit: 8 });
+    expect(report).toMatchObject({ totalOutstanding: 900, totalCreditOwed: 3000, withCreditCount: 2, netOutstanding: -2100 });
+  });
+
+  it('pipeline keeps the negative excess as creditOwed per row and sums it in the summary', async () => {
+    supplierMocks.aggregate.mockReturnValue(mockAggregate([{ summary: [], top: [] }]));
+    await getSuppliersReport({ limit: 8 });
+    const pipeline = supplierMocks.aggregate.mock.calls[0][0];
+    const floor = pipeline.find((s) => s.$addFields?.creditOwed && s.$addFields?.remaining);
+    expect(floor).toBeTruthy();
+    const group = pipeline.find((s) => s.$facet).$facet.summary[0].$group;
+    expect(group.totalCreditOwed).toEqual({ $sum: '$creditOwed' });
   });
 
   it('respects a custom limit for the top list', async () => {

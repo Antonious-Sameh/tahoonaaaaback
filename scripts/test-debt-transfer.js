@@ -34,6 +34,7 @@ const { supplierService } = await import('../src/services/supplier.service.js');
 const { createCustomerDebtTransfer, listCustomerDebtTransfers } = await import('../src/services/customerDebtTransfer.service.js');
 const { createSupplierCreditReceipt } = await import('../src/services/supplierCreditReceipt.service.js');
 const reports = await import('../src/services/reports.service.js');
+const { listActivity } = await import('../src/services/activityLog.service.js');
 const cashbox = await import('../src/services/cashbox.service.js');
 
 let passed = 0;
@@ -270,6 +271,107 @@ try {
   await T(C(a), S(s), 1000);
   const rcpt = await createSupplierCreditReceipt({ supplierId: String(s._id), amount: 1000, idempotencyKey: K() });
   check('supplier settles the transferred debt in cash (credit receipt)', !!rcpt && eq(await sBal(s), { remaining: 0, creditOwed: 0 }), show(await sBal(s)));
+
+  section('15b. reports: creditOwed totals, net position, no double counting');
+  const near = (x, y) => Math.abs(x - y) < 0.005;
+  const sumBy = async (Model, fn, key) => (await Promise.all((await Model.find()).map((d) => fn(d)))).reduce((x, y) => x + y[key], 0);
+  {
+    const cr = await reports.getCustomersReport({ limit: 500 });
+    const sr = await reports.getSuppliersReport({ limit: 500 });
+    check('suppliers report totalCreditOwed == sum of supplier creditOwed', near(sr.totalCreditOwed, await sumBy(Supplier, sBal, 'creditOwed')), `${sr.totalCreditOwed}`);
+    check('suppliers report netOutstanding == outstanding - creditOwed', near(sr.netOutstanding, sr.totalOutstanding - sr.totalCreditOwed));
+    check('customers report totalCreditOwed == sum of customer creditOwed', near(cr.totalCreditOwed, await sumBy(Customer, cBal, 'creditOwed')));
+    const rowsWithBoth = sr.topSuppliers.filter((x) => x.remaining > 0 && x.creditOwed > 0);
+    check('no supplier row has BOTH remaining and creditOwed (nothing double counted)', rowsWithBoth.length === 0);
+    const sRows = Object.fromEntries(sr.topSuppliers.map((x) => [x.name, x]));
+    check('per-row creditOwed matches the supplier page (S6-2 = 1500)', sRows['S6-2']?.creditOwed === 1500, JSON.stringify(sRows['S6-2']));
+    const pr = await reports.getPurchasesReport({});
+    check('purchases report supplier table carries creditOwed too', pr.supplierBalances.find((x) => x.name === 'S6-2')?.creditOwed === 1500);
+    const net = async () => {
+      const c = await reports.getCustomersReport({ limit: 1 });
+      const q = await reports.getSuppliersReport({ limit: 1 });
+      // what the shop is owed minus what it owes, across everyone
+      return round(c.totalOutstanding - c.totalCreditOwed + q.totalCreditOwed - q.totalOutstanding);
+    };
+    const round = (x) => Math.round(x * 100) / 100;
+
+    // 1) customer 3000 -> supplier 0
+    const n0 = await net();
+    const c1 = await mkCustomer('R-C1', { owes: 3000 });
+    const s1r = await mkSupplier('R-S1');
+    const n1 = await net();
+    const before1 = { c: (await reports.getCustomersReport({ limit: 1 })), s: (await reports.getSuppliersReport({ limit: 1 })) };
+    await T(C(c1), S(s1r), 3000);
+    const after1 = { c: (await reports.getCustomersReport({ limit: 1 })), s: (await reports.getSuppliersReport({ limit: 1 })) };
+    check('R1: customers outstanding fell by 3000', near(before1.c.totalOutstanding - after1.c.totalOutstanding, 3000));
+    check('R1: suppliers creditOwed rose by 3000 (shows up!)', near(after1.s.totalCreditOwed - before1.s.totalCreditOwed, 3000));
+    check('R1: suppliers outstanding unchanged', near(after1.s.totalOutstanding, before1.s.totalOutstanding));
+    check('R1: overall net position unchanged by the transfer', (await net()) === n1 && n1 === round(n0 + 3000));
+
+    // 2) netting: supplier the shop owes 1000
+    const c2 = await mkCustomer('R-C2', { owes: 3000 });
+    const s2r = await mkSupplier('R-S2', { weOwe: 1000 });
+    const b2 = { c: await reports.getCustomersReport({ limit: 1 }), s: await reports.getSuppliersReport({ limit: 1 }), n: await net() };
+    await T(C(c2), S(s2r), 3000);
+    const a2 = { c: await reports.getCustomersReport({ limit: 1 }), s: await reports.getSuppliersReport({ limit: 1 }), n: await net() };
+    check('R2: supplier outstanding -1000 (netted), creditOwed +2000', near(b2.s.totalOutstanding - a2.s.totalOutstanding, 1000) && near(a2.s.totalCreditOwed - b2.s.totalCreditOwed, 2000));
+    check('R2: customers outstanding -3000', near(b2.c.totalOutstanding - a2.c.totalOutstanding, 3000));
+    check('R2: net position unchanged', a2.n === b2.n);
+
+    // 3) supplier -> customer, 4) supplier -> supplier (shop owed 800 by dest... i.e. dest "له 800")
+    const s3r = await mkSupplier('R-S3', { theyOwe: 3000 });
+    const c3 = await mkCustomer('R-C3');
+    const b3 = await net();
+    await T(S(s3r), C(c3), 3000);
+    check('R3: supplier->customer: net unchanged, customer owes 3000, supplier 0', (await net()) === b3 && eq(await cBal(c3), { remaining: 3000, creditOwed: 0 }) && eq(await sBal(s3r), { remaining: 0, creditOwed: 0 }));
+    const s4a = await mkSupplier('R-S4a', { theyOwe: 3000 });
+    const s4b = await mkSupplier('R-S4b', { weOwe: 800 });
+    const b4 = await net();
+    await T(S(s4a), S(s4b), 3000);
+    check('R4: supplier->supplier: net unchanged', (await net()) === b4);
+    check('R4: dest shop-owed 800 -> they now owe 2200', eq(await sBal(s4b), { remaining: 0, creditOwed: 2200 }), show(await sBal(s4b)));
+
+    // successive transfers keep the invariant
+    const b5 = await net();
+    await T(S(s4b), C(c3), 1000);
+    await T(C(c3), S(s4a), 500);
+    check('R5: successive transfers keep net position', (await net()) === b5);
+  }
+
+  section('15c. activity log filters');
+  {
+    const cx = await mkCustomer('A-C', { owes: 500 });
+    const sx = await mkSupplier('A-S');
+    const rec1 = await T(C(cx), S(sx), 200);
+    const countFor = async (type) => {
+      const r = await listActivity({ type, limit: 100 });
+      return r.items.filter((i) => String(i.refId) === String(rec1._id)).length;
+    };
+    check('customers filter shows the customer->supplier transfer', (await countFor('customer')) === 1);
+    check('suppliers filter shows it too', (await countFor('supplier')) === 1);
+    check('unfiltered ("all") shows it exactly once', (await countFor('all')) === 1);
+    check('other types (cash) do not show it', (await countFor('cash')) === 0);
+    check('a single ActivityLog document exists for the operation', (await ActivityLog.countDocuments({ refId: rec1._id })) === 1);
+    const rec2 = await T(S(await mkSupplier('A-S2', { theyOwe: 90 })), C(cx), 90);
+    const r2 = async (type) => (await listActivity({ type, limit: 100 })).items.filter((i) => String(i.refId) === String(rec2._id)).length;
+    check('supplier->customer: visible under both filters, once under all', (await r2('customer')) === 1 && (await r2('supplier')) === 1 && (await r2('all')) === 1);
+    const rec3 = await T(C(cx), C(await mkCustomer('A-C2')), 50);
+    const r3 = async (type) => (await listActivity({ type, limit: 100 })).items.filter((i) => String(i.refId) === String(rec3._id)).length;
+    check('customer->customer: customers filter only (as before)', (await r3('customer')) === 1 && (await r3('supplier')) === 0);
+    // legacy entries (no relatedTypes) are still found by their own type
+    await ActivityLog.collection.insertOne({ type: 'customer', description: 'legacy', amount: 1, refId: null, date: new Date(), createdAt: new Date(), updatedAt: new Date() });
+    check('legacy activity (no relatedTypes) still matches its type', (await listActivity({ type: 'customer', limit: 100 })).items.some((i) => i.description === 'legacy'));
+  }
+
+  section('15d. two transfers WITHOUT an idempotency key (API callers) both succeed');
+  {
+    const k1 = await mkCustomer('K-A', { owes: 300 });
+    const k2 = await mkCustomer('K-B');
+    const noKey = (amt) => createCustomerDebtTransfer({ fromCustomerId: String(k1._id), toCustomerId: String(k2._id), amount: amt });
+    const e1 = await rejects(() => noKey(100)); const e2 = await rejects(() => noKey(100));
+    check('both keyless transfers accepted', e1 === null && e2 === null, `${e1?.message} / ${e2?.message}`);
+    check('K-A 100 left, K-B 200', eq(await cBal(k1), { remaining: 100, creditOwed: 0 }) && eq(await cBal(k2), { remaining: 200, creditOwed: 0 }));
+  }
 
   section('16. nothing else moved');
   // Cash rose only by the one credit receipt above (a genuine cash event) — undo it for the comparison.

@@ -16,10 +16,15 @@ const MAX_PAGE_SIZE = 100;
  * activity entry claiming it happened.
  */
 export async function recordActivity(
-  { type, description, amount = 0, refId = null },
+  { type, description, amount = 0, refId = null, relatedTypes },
   { session } = {},
 ) {
-  await ActivityLog.create([{ type, description, amount, refId }], { session });
+  const doc = { type, description, amount, refId };
+  // Only stored when it adds something beyond `type` itself, so ordinary
+  // entries stay byte-for-byte what they were.
+  const related = Array.isArray(relatedTypes) ? [...new Set([type, ...relatedTypes])] : [];
+  if (related.length > 1) doc.relatedTypes = related;
+  await ActivityLog.create([doc], { session });
 }
 
 /**
@@ -35,7 +40,10 @@ export async function listActivity({
   to,
 } = {}) {
   const match = {};
-  if (type && type !== "all") match.type = type;
+  // An entry matches a type filter if it is of that type OR lists it in
+  // `relatedTypes` (a transfer between a customer and a supplier appears under
+  // both filters, but still once in the unfiltered feed).
+  if (type && type !== "all") match.$or = [{ type }, { relatedTypes: type }];
   const range = cairoRangeMatch(from, to);
   if (Object.keys(range).length) match.date = range;
 
